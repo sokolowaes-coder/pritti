@@ -17,6 +17,7 @@ var (
 	ErrClientNotFound   = errors.New("record client not found")
 	ErrEmployeeNotFound = errors.New("record employee not found")
 	ErrEmployeeBusy     = errors.New("employee has another record at this time")
+	ErrClientBusy       = errors.New("client has another record at this time")
 )
 
 const recordColumns = `id, name, description, client_id, employee_id, starts_at, ends_at, status, created_at`
@@ -161,7 +162,7 @@ func (s *Storage) Update(ctx context.Context, id string, in RecordInput) (Record
 }
 
 // constraintError превращает нарушения ограничений БД в понятные ошибки:
-// 23503 — нет такого клиента или сотрудника, 23P01 — у мастера уже есть запись на это время.
+// 23503 — нет такого клиента или сотрудника, 23P01 — у мастера или клиента уже есть запись на это время.
 func constraintError(err error) error {
 	var pgErr *pgconn.PgError
 	if !errors.As(err, &pgErr) {
@@ -174,6 +175,8 @@ func constraintError(err error) error {
 		return ErrEmployeeNotFound
 	case pgErr.Code == "23P01" && pgErr.ConstraintName == "records_employee_no_overlap":
 		return ErrEmployeeBusy
+	case pgErr.Code == "23P01" && pgErr.ConstraintName == "records_client_no_overlap":
+		return ErrClientBusy
 	}
 	return err
 }

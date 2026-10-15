@@ -21,9 +21,11 @@ const (
 const (
 	codeNotFound     = "record_not_found"
 	codeEmployeeBusy = "employee_busy"
+	codeClientBusy   = "client_busy"
 
 	msgNotFound     = "запись не найдена"
 	msgEmployeeBusy = "у мастера уже есть запись, пересекающаяся с этим временем"
+	msgClientBusy   = "у клиента уже есть запись, пересекающаяся с этим временем"
 )
 
 type RecordStore interface {
@@ -142,7 +144,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 }
 
 // writeStoreError отвечает на ошибки, о которых знает только БД: клиента или сотрудника
-// из тела запроса нет (400, как ошибка поля) или мастер в это время занят (409).
+// из тела запроса нет (400, как ошибка поля) или мастер либо клиент в это время заняты (409).
 func writeStoreError(w http.ResponseWriter, err error) bool {
 	switch {
 	case errors.Is(err, ErrClientNotFound):
@@ -151,6 +153,9 @@ func writeStoreError(w http.ResponseWriter, err error) bool {
 		return httpx.Problems{"employee_id": "сотрудник не найден"}.Write(w)
 	case errors.Is(err, ErrEmployeeBusy):
 		httpx.WriteError(w, http.StatusConflict, codeEmployeeBusy, msgEmployeeBusy)
+		return true
+	case errors.Is(err, ErrClientBusy):
+		httpx.WriteError(w, http.StatusConflict, codeClientBusy, msgClientBusy)
 		return true
 	}
 	return false

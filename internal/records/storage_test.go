@@ -27,6 +27,15 @@ func newRefs(t *testing.T, s *Storage) (clientID, employeeID string) {
 	return clientID, newEmployee(t, s, "сотрудник")
 }
 
+func newClient(t *testing.T, s *Storage, name, phone string) string {
+	t.Helper()
+	var id string
+	if err := s.db.QueryRow(context.Background(), `INSERT INTO clients (full_name, phone) VALUES ($1, $2) RETURNING id`, name, phone).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
 func newEmployee(t *testing.T, s *Storage, name string) string {
 	t.Helper()
 	var id string
@@ -154,6 +163,7 @@ func TestStorageEmployeeOverlap(t *testing.T) {
 	ctx := context.Background()
 	clientID, employeeID := newRefs(t, s)
 	otherEmployee := newEmployee(t, s, "другой мастер")
+	otherClient := newClient(t, s, "другой клиент", "+79990001122")
 
 	first, err := s.Create(ctx, visit("10–12", clientID, employeeID, 10, 12))
 	if err != nil {
@@ -174,7 +184,8 @@ func TestStorageEmployeeOverlap(t *testing.T) {
 		{"накрывает чужую запись", visit("9–13", clientID, employeeID, 9, 13), ErrEmployeeBusy},
 		{"впритык после: [10, 12) и [12, 13) не пересекаются", visit("12–13", clientID, employeeID, 12, 13), nil},
 		{"впритык до", visit("9–10", clientID, employeeID, 9, 10), nil},
-		{"то же время у другого мастера", visit("10–12", clientID, otherEmployee, 10, 12), nil},
+		{"то же время у другого мастера — но клиент тот же", visit("10–12", clientID, otherEmployee, 10, 12), ErrClientBusy},
+		{"то же время у другого мастера и другого клиента", visit("10–12", otherClient, otherEmployee, 10, 12), nil},
 		{"отменённая не мешает", cancelled, nil},
 	}
 	for _, tt := range tests {
@@ -222,7 +233,8 @@ func TestStorageEmployeeOverlapConcurrent(t *testing.T) {
 		switch {
 		case err == nil:
 			ok++
-		case errors.Is(err, ErrEmployeeBusy):
+		// Клиент и мастер одни и те же — Postgres может сообщить о любом из двух ограничений.
+		case errors.Is(err, ErrEmployeeBusy), errors.Is(err, ErrClientBusy):
 			busy++
 		default:
 			t.Errorf("неожиданная ошибка: %v", err)

@@ -25,10 +25,11 @@ type fakeStore struct {
 	lastFilter ListFilter // с какими фильтрами вызвали List
 }
 
-// newFakeStore создаёт клиента и сотрудника uid(1) и записи с этими именами —
+// newFakeStore создаёт клиентов и сотрудников uid(1) и uid(2) и записи с этими именами
+// (клиент и мастер — uid(1)) —
 // по часу подряд с 16.10.2026 10:00 UTC, чтобы не пересекались.
 func newFakeStore(names ...string) *fakeStore {
-	s := &fakeStore{nextID: 1, refs: map[string]bool{uid(1): true}}
+	s := &fakeStore{nextID: 1, refs: map[string]bool{uid(1): true, uid(2): true}}
 	start := time.Date(2026, 10, 16, 10, 0, 0, 0, time.UTC)
 	for i, n := range names {
 		at := start.Add(time.Duration(i) * time.Hour)
@@ -39,7 +40,7 @@ func newFakeStore(names ...string) *fakeStore {
 }
 
 // check повторяет проверки, которые в настоящей БД делает Postgres:
-// внешние ключи и запрет пересечения записей одного мастера.
+// внешние ключи и запрет пересечения записей одного мастера и одного клиента.
 func (s *fakeStore) check(id string, in RecordInput) error {
 	if !s.refs[in.ClientID] {
 		return ErrClientNotFound
@@ -51,9 +52,14 @@ func (s *fakeStore) check(id string, in RecordInput) error {
 		return nil
 	}
 	for _, r := range s.records {
-		if r.ID != id && r.EmployeeID == in.EmployeeID && r.Status != StatusCancelled &&
-			r.StartsAt.Before(in.EndsAt) && in.StartsAt.Before(r.EndsAt) {
+		if r.ID == id || r.Status == StatusCancelled || !r.StartsAt.Before(in.EndsAt) || !in.StartsAt.Before(r.EndsAt) {
+			continue
+		}
+		switch {
+		case r.EmployeeID == in.EmployeeID:
 			return ErrEmployeeBusy
+		case r.ClientID == in.ClientID:
+			return ErrClientBusy
 		}
 	}
 	return nil
@@ -204,6 +210,8 @@ func TestHandlerStatusCodes(t *testing.T) {
 		{"создание: длиннее 12 часов", "POST", "/records", body(m{"ends_at": "2026-10-18T12:00:00"}), http.StatusBadRequest},
 		{"создание: неизвестный статус", "POST", "/records", body(m{"status": "done"}), http.StatusBadRequest},
 		{"создание: мастер занят", "POST", "/records", body(m{"starts_at": "2026-10-16T10:30:00", "ends_at": "2026-10-16T11:30:00"}), http.StatusConflict},
+		{"создание: клиент занят у другого мастера", "POST", "/records", body(m{"employee_id": uid(2), "starts_at": "2026-10-16T10:30:00", "ends_at": "2026-10-16T11:30:00"}), http.StatusConflict},
+		{"создание: другой клиент к другому мастеру", "POST", "/records", body(m{"client_id": uid(2), "employee_id": uid(2), "starts_at": "2026-10-16T10:30:00", "ends_at": "2026-10-16T11:30:00"}), http.StatusCreated},
 		{"создание: впритык после чужой записи", "POST", "/records", body(m{"starts_at": "2026-10-16T11:00:00", "ends_at": "2026-10-16T12:00:00"}), http.StatusCreated},
 		{"создание: отменённая не мешает пересечению", "POST", "/records", body(m{"starts_at": "2026-10-16T10:30:00", "ends_at": "2026-10-16T11:30:00", "status": "cancelled"}), http.StatusCreated},
 		{"создание: сломанный JSON", "POST", "/records", `{`, http.StatusBadRequest},
@@ -422,6 +430,7 @@ func TestStoreErrorsMapToFieldsAndCodes(t *testing.T) {
 		{"нет клиента", body(m{"client_id": uid(999)}), `"fields":{"client_id":"клиент не найден"}`},
 		{"нет сотрудника", body(m{"employee_id": uid(999)}), `"fields":{"employee_id":"сотрудник не найден"}`},
 		{"мастер занят", body(m{"starts_at": "2026-10-16T10:00:00", "ends_at": "2026-10-16T10:15:00"}), `"code":"employee_busy"`},
+		{"клиент занят", body(m{"employee_id": uid(2), "starts_at": "2026-10-16T10:00:00", "ends_at": "2026-10-16T10:15:00"}), `"code":"client_busy"`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
