@@ -20,7 +20,7 @@ jobs:
     # Окружение production: в его настройках можно включить подтверждение перед запуском.
     environment: production
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-go@v6
         with:
