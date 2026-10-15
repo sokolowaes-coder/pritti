@@ -47,12 +47,8 @@ paths:
           in: query
           description: created_at не позже. Дата без времени — до конца дня.
           schema: { type: string }
-        - name: limit
-          in: query
-          schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
-        - name: offset
-          in: query
-          schema: { type: integer, minimum: 0, default: 0 }
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
       responses:
         "200":
           description: Страница записей
@@ -131,13 +127,17 @@ paths:
   /clients:
     get:
       tags: [Клиенты]
-      summary: Список клиентов
+      summary: Список клиентов с пагинацией
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
       responses:
         "200":
-          description: Все клиенты
+          description: Страница клиентов
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ClientList" }
+        "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "500": { $ref: "#/components/responses/Internal" }
     post:
@@ -158,6 +158,19 @@ paths:
   /clients/{id}:
     parameters:
       - $ref: "#/components/parameters/ID"
+    get:
+      tags: [Клиенты]
+      summary: Клиент по id
+      responses:
+        "200":
+          description: Клиент
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Client" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/Internal" }
     put:
       tags: [Клиенты]
       summary: Изменить клиента
@@ -187,13 +200,17 @@ paths:
   /employees:
     get:
       tags: [Сотрудники]
-      summary: Список сотрудников
+      summary: Список сотрудников с пагинацией
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
       responses:
         "200":
-          description: Все сотрудники
+          description: Страница сотрудников
           content:
             application/json:
               schema: { $ref: "#/components/schemas/PersonList" }
+        "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "500": { $ref: "#/components/responses/Internal" }
     post:
@@ -213,6 +230,19 @@ paths:
   /employees/{id}:
     parameters:
       - $ref: "#/components/parameters/ID"
+    get:
+      tags: [Сотрудники]
+      summary: Сотрудник по id
+      responses:
+        "200":
+          description: Сотрудник
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Person" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/Internal" }
     put:
       tags: [Сотрудники]
       summary: Изменить сотрудника
@@ -268,6 +298,16 @@ components:
       in: path
       required: true
       schema: { type: string, format: uuid, example: 01a140dc-0c34-7abb-8d6c-36e2d1879e0d }
+    Limit:
+      name: limit
+      in: query
+      description: Размер страницы
+      schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+    Offset:
+      name: offset
+      in: query
+      description: Сколько элементов пропустить
+      schema: { type: integer, minimum: 0, default: 0 }
 
   requestBodies:
     Client:
@@ -334,18 +374,8 @@ components:
         id: { type: string, format: uuid, example: 01a140dc-0c34-7abb-8d6c-36e2d1879e0d }
         name: { type: string, example: Чистка лица }
         description: { type: string, example: кабинет 1 }
-        client_id:
-          type: string
-          format: uuid
-          nullable: true
-          description: null только у записей, созданных до появления клиентов
-          example: 01a140dc-0b11-7c2e-9d4f-5a6b7c8d9e0f
-        employee_id:
-          type: string
-          format: uuid
-          nullable: true
-          description: null только у записей, созданных до появления сотрудников
-          example: 01a140dc-0b22-7d3f-8e5a-6b7c8d9e0f1a
+        client_id: { type: string, format: uuid, example: 01a140dc-0b11-7c2e-9d4f-5a6b7c8d9e0f }
+        employee_id: { type: string, format: uuid, example: 01a140dc-0b22-7d3f-8e5a-6b7c8d9e0f1a }
         created_at: { type: string, format: date-time }
 
     RecordInput:
@@ -383,14 +413,16 @@ components:
               properties:
                 value: { type: string, nullable: true, example: "2026-09-27T23:59:59" }
         count: { type: integer, description: "Всего подходящих записей, без учёта пагинации" }
-        pagination:
-          type: object
-          properties:
-            limit: { type: integer, example: 20 }
-            offset: { type: integer, example: 0 }
+        pagination: { $ref: "#/components/schemas/Pagination" }
         data:
           type: array
           items: { $ref: "#/components/schemas/Record" }
+
+    Pagination:
+      type: object
+      properties:
+        limit: { type: integer, example: 20 }
+        offset: { type: integer, example: 0 }
 
     Client:
       type: object
@@ -404,7 +436,8 @@ components:
       type: object
       properties:
         success: { type: boolean, example: true }
-        count: { type: integer, example: 1 }
+        count: { type: integer, example: 1, description: "Всего, без учёта пагинации" }
+        pagination: { $ref: "#/components/schemas/Pagination" }
         data:
           type: array
           items: { $ref: "#/components/schemas/Client" }
@@ -420,7 +453,8 @@ components:
       type: object
       properties:
         success: { type: boolean, example: true }
-        count: { type: integer, example: 1 }
+        count: { type: integer, example: 1, description: "Всего, без учёта пагинации" }
+        pagination: { $ref: "#/components/schemas/Pagination" }
         data:
           type: array
           items: { $ref: "#/components/schemas/Person" }

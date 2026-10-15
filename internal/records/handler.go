@@ -14,6 +14,13 @@ const (
 	maxDescriptionLen = 2000
 )
 
+// Тексты ошибок для пользователя API.
+const (
+	msgNotFound         = "запись не найдена"
+	msgClientNotFound   = "клиент не найден"
+	msgEmployeeNotFound = "сотрудник не найден"
+)
+
 type RecordStore interface {
 	List(ctx context.Context, f ListFilter) ([]Record, int, error)
 	GetByID(ctx context.Context, id string) (Record, error)
@@ -54,7 +61,7 @@ func (h *Handler) GetByID(w http.ResponseWriter, r *http.Request) {
 	}
 	rec, err := h.storage.GetByID(r.Context(), id)
 	if errors.Is(err, ErrNotFound) {
-		httpx.WriteError(w, http.StatusNotFound, "запись не найдена")
+		httpx.WriteError(w, http.StatusNotFound, msgNotFound)
 		return
 	}
 	if err != nil {
@@ -70,8 +77,7 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rec, err := h.storage.Create(r.Context(), in)
-	if errors.Is(err, ErrClientNotFound) || errors.Is(err, ErrEmployeeNotFound) {
-		httpx.WriteError(w, http.StatusBadRequest, err.Error())
+	if refsError(w, err) {
 		return
 	}
 	if err != nil {
@@ -92,11 +98,10 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 	rec, err := h.storage.Update(r.Context(), id, in)
 	if errors.Is(err, ErrNotFound) {
-		httpx.WriteError(w, http.StatusNotFound, "запись не найдена")
+		httpx.WriteError(w, http.StatusNotFound, msgNotFound)
 		return
 	}
-	if errors.Is(err, ErrClientNotFound) || errors.Is(err, ErrEmployeeNotFound) {
-		httpx.WriteError(w, http.StatusBadRequest, err.Error())
+	if refsError(w, err) {
 		return
 	}
 	if err != nil {
@@ -113,7 +118,7 @@ func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 	}
 	err := h.storage.Delete(r.Context(), id)
 	if errors.Is(err, ErrNotFound) {
-		httpx.WriteError(w, http.StatusNotFound, "запись не найдена")
+		httpx.WriteError(w, http.StatusNotFound, msgNotFound)
 		return
 	}
 	if err != nil {
@@ -156,4 +161,17 @@ func decodeInput(w http.ResponseWriter, r *http.Request) (RecordInput, bool) {
 		return RecordInput{}, false
 	}
 	return in, true
+}
+
+// refsError отвечает 400, если клиента или сотрудника из тела запроса нет в БД.
+func refsError(w http.ResponseWriter, err error) bool {
+	switch {
+	case errors.Is(err, ErrClientNotFound):
+		httpx.WriteError(w, http.StatusBadRequest, msgClientNotFound)
+	case errors.Is(err, ErrEmployeeNotFound):
+		httpx.WriteError(w, http.StatusBadRequest, msgEmployeeNotFound)
+	default:
+		return false
+	}
+	return true
 }

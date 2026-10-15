@@ -14,6 +14,9 @@ import (
 	"pritti/migrations"
 )
 
+// migrationsLockID — ключ advisory-блокировки, под которой тесты применяют миграции.
+const migrationsLockID = 7_316_402_115
+
 // New подключается к TEST_DATABASE_URL, создаёт отдельную временную схему
 // и применяет в ней все миграции, чтобы не трогать настоящие данные.
 // Без TEST_DATABASE_URL тест пропускается.
@@ -34,7 +37,10 @@ func New(t *testing.T) *pgxpool.Pool {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		admin.Exec(context.Background(), "DROP SCHEMA "+schema+" CASCADE")
+		// Не молчим: иначе схемы от упавших удалений будут незаметно копиться в БД.
+		if _, err := admin.Exec(context.Background(), "DROP SCHEMA "+schema+" CASCADE"); err != nil {
+			t.Errorf("удаление тестовой схемы %s: %v", schema, err)
+		}
 		admin.Close()
 	})
 
@@ -48,7 +54,22 @@ func New(t *testing.T) *pgxpool.Pool {
 	u.RawQuery = q.Encode()
 	schemaDSN := u.String()
 
-	if err := migrations.Up(schemaDSN); err != nil {
+	// Пакеты тестов идут параллельно, каждый в своей схеме, а расширения (pg_trgm)
+	// общие на всю БД: одновременный CREATE EXTENSION падает на гонке. Блокировка
+	// migrate привязана к схеме и тут не спасает, поэтому миграции — по очереди.
+	lockConn, err := admin.Acquire(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lockConn.Release()
+	if _, err := lockConn.Exec(ctx, "SELECT pg_advisory_lock($1)", migrationsLockID); err != nil {
+		t.Fatal(err)
+	}
+	err = migrations.Up(schemaDSN)
+	if _, unlockErr := lockConn.Exec(ctx, "SELECT pg_advisory_unlock($1)", migrationsLockID); unlockErr != nil {
+		t.Fatal(unlockErr)
+	}
+	if err != nil {
 		t.Fatal(err)
 	}
 

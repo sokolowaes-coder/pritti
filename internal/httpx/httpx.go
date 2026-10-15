@@ -4,9 +4,11 @@ package httpx
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -98,6 +100,43 @@ func DecodeJSON(w http.ResponseWriter, r *http.Request, v any) bool {
 }
 
 var errTrailingData = errors.New("лишние данные после JSON")
+
+// Размер страницы в списках: ?limit=…&offset=….
+const (
+	DefaultLimit = 20
+	MaxLimit     = 100
+)
+
+// Page — какую страницу списка вернуть. В ответе — поле "pagination".
+type Page struct {
+	Limit  int `json:"limit"`
+	Offset int `json:"offset"`
+}
+
+// ParsePage читает limit и offset из query. Без них — первые DefaultLimit элементов.
+func ParsePage(q url.Values) (Page, error) {
+	p := Page{Limit: DefaultLimit}
+	var err error
+	if v := q.Get("limit"); v != "" {
+		if p.Limit, err = strconv.Atoi(v); err != nil || p.Limit < 1 || p.Limit > MaxLimit {
+			return p, fmt.Errorf("limit: число от 1 до %d", MaxLimit)
+		}
+	}
+	if v := q.Get("offset"); v != "" {
+		if p.Offset, err = strconv.Atoi(v); err != nil || p.Offset < 0 {
+			return p, errors.New("offset: число от 0")
+		}
+	}
+	return p, nil
+}
+
+// ListResponse — ответ списка: count — сколько элементов всего, data — текущая страница.
+type ListResponse[T any] struct {
+	Success    bool `json:"success"`
+	Count      int  `json:"count"`
+	Pagination Page `json:"pagination"`
+	Data       []T  `json:"data"`
+}
 
 // CheckText обрезает пробелы по краям *s и проверяет длину.
 // Возвращает текст ошибки для клиента или "", если всё в порядке.

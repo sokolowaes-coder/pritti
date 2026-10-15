@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"pritti/internal/httpx"
 )
 
 type fakeStore struct {
@@ -36,13 +38,27 @@ func (s *fakeStore) phoneTaken(id string, phone string) bool {
 	return false
 }
 
-func (s *fakeStore) List(ctx context.Context) ([]Client, error) {
+func (s *fakeStore) List(ctx context.Context, limit, offset int) ([]Client, int, error) {
 	if s.err != nil {
-		return nil, s.err
+		return nil, 0, s.err
 	}
-	out := make([]Client, len(s.clients))
-	copy(out, s.clients)
-	return out, nil
+	start := min(offset, len(s.clients))
+	end := min(start+limit, len(s.clients))
+	out := make([]Client, end-start)
+	copy(out, s.clients[start:end])
+	return out, len(s.clients), nil
+}
+
+func (s *fakeStore) GetByID(ctx context.Context, id string) (Client, error) {
+	if s.err != nil {
+		return Client{}, s.err
+	}
+	for _, x := range s.clients {
+		if x.ID == id {
+			return x, nil
+		}
+	}
+	return Client{}, ErrNotFound
 }
 
 func (s *fakeStore) Create(ctx context.Context, in ClientInput) (Client, error) {
@@ -113,6 +129,13 @@ func TestHandlerStatusCodes(t *testing.T) {
 		wantStatus int
 	}{
 		{"список", "GET", "/clients", "", http.StatusOK},
+		{"список: страница", "GET", "/clients?limit=1&offset=1", "", http.StatusOK},
+		{"список: limit больше максимума", "GET", "/clients?limit=101", "", http.StatusBadRequest},
+		{"список: offset отрицательный", "GET", "/clients?offset=-1", "", http.StatusBadRequest},
+
+		{"по id", "GET", "/clients/00000000-0000-0000-0000-000000000001", "", http.StatusOK},
+		{"по id: нет такого", "GET", "/clients/00000000-0000-0000-0000-000000000999", "", http.StatusNotFound},
+		{"по id: id не UUID", "GET", "/clients/abc", "", http.StatusBadRequest},
 
 		{"создание", "POST", "/clients", `{"full_name":"Иванова Анна","phone":"+79161234567"}`, http.StatusCreated},
 		{"создание: телефон с 8 и скобками", "POST", "/clients", `{"full_name":"Иванова Анна","phone":"8 (916) 123-45-67"}`, http.StatusCreated},
@@ -153,6 +176,7 @@ func TestHandlerStoreError(t *testing.T) {
 		method, path, body string
 	}{
 		{"GET", "/clients", ""},
+		{"GET", "/clients/00000000-0000-0000-0000-000000000001", ""},
 		{"POST", "/clients", `{"full_name":"x","phone":"+79161234567"}`},
 		{"PUT", "/clients/00000000-0000-0000-0000-000000000001", `{"full_name":"x","phone":"+79161234567"}`},
 		{"DELETE", "/clients/00000000-0000-0000-0000-000000000001", ""},
@@ -183,6 +207,17 @@ func TestListResponseFormat(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !got.Success || got.Count != 2 || len(got.Data) != 2 || got.Data[1].FullName != "Борис" {
+		t.Errorf("получили %+v", got)
+	}
+}
+
+func TestListPagination(t *testing.T) {
+	rec := do(t, newFakeStore("Анна", "Борис", "Вера"), "GET", "/clients?limit=1&offset=1", "")
+	var got httpx.ListResponse[Client]
+	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Count != 3 || len(got.Data) != 1 || got.Data[0].ID != uid(2) || got.Pagination != (httpx.Page{Limit: 1, Offset: 1}) {
 		t.Errorf("получили %+v", got)
 	}
 }

@@ -11,10 +11,11 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// Ошибки хранилища — маркеры для errors.Is. Что ответить пользователю, решает хендлер.
 var (
-	ErrNotFound         = errors.New("запись не найдена")
-	ErrClientNotFound   = errors.New("клиент не найден")
-	ErrEmployeeNotFound = errors.New("сотрудник не найден")
+	ErrNotFound         = errors.New("record not found")
+	ErrClientNotFound   = errors.New("record client not found")
+	ErrEmployeeNotFound = errors.New("record employee not found")
 )
 
 const recordColumns = `id, name, description, client_id, employee_id, created_at`
@@ -30,29 +31,38 @@ func NewStorage(db *pgxpool.Pool) *Storage {
 // List возвращает страницу записей по фильтрам и общее число подходящих записей.
 func (s *Storage) List(ctx context.Context, f ListFilter) ([]Record, int, error) {
 	where, args := buildWhere(f)
+	countArgs := args
 
-	var total int
-	if err := s.db.QueryRow(ctx, `SELECT count(*) FROM records`+where, args...).Scan(&total); err != nil {
-		return nil, 0, err
-	}
-
+	// count(*) OVER() считается до LIMIT: общее число приходит тем же запросом,
+	// что и страница, поэтому они не разойдутся, если таблица меняется между запросами.
 	args = append(args, f.Limit, f.Offset)
 	rows, err := s.db.Query(ctx,
-		`SELECT `+recordColumns+` FROM records`+where+
+		`SELECT `+recordColumns+`, count(*) OVER() FROM records`+where+
 			fmt.Sprintf(` ORDER BY created_at, id LIMIT $%d OFFSET $%d`, len(args)-1, len(args)),
 		args...,
 	)
 	if err != nil {
 		return nil, 0, err
 	}
-	records, err := pgx.CollectRows(rows, pgx.RowToStructByPos[Record])
+	var total int
+	records, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (Record, error) {
+		var rec Record
+		err := row.Scan(&rec.ID, &rec.Name, &rec.Description, &rec.ClientID, &rec.EmployeeID, &rec.CreatedAt, &total)
+		return rec, err
+	})
 	if err != nil {
 		return nil, 0, err
 	}
-	if records == nil {
-		records = []Record{}
+	if len(records) > 0 {
+		return records, total, nil
 	}
-	return records, total, nil
+	// Пустая страница — строк с count нет: offset мог уйти за конец списка. Считаем отдельно.
+	if f.Offset > 0 {
+		if err := s.db.QueryRow(ctx, `SELECT count(*) FROM records`+where, countArgs...).Scan(&total); err != nil {
+			return nil, 0, err
+		}
+	}
+	return []Record{}, total, nil
 }
 
 // buildWhere собирает WHERE из фильтров. Значения всегда идут через $1, $2...,

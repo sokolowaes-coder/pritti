@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"pritti/internal/httpx"
 )
 
 type fakeStore struct {
@@ -27,13 +29,27 @@ func newFakeStore(names ...string) *fakeStore {
 	return s
 }
 
-func (s *fakeStore) List(ctx context.Context) ([]Employee, error) {
+func (s *fakeStore) List(ctx context.Context, limit, offset int) ([]Employee, int, error) {
 	if s.err != nil {
-		return nil, s.err
+		return nil, 0, s.err
 	}
-	out := make([]Employee, len(s.employees))
-	copy(out, s.employees)
-	return out, nil
+	start := min(offset, len(s.employees))
+	end := min(start+limit, len(s.employees))
+	out := make([]Employee, end-start)
+	copy(out, s.employees[start:end])
+	return out, len(s.employees), nil
+}
+
+func (s *fakeStore) GetByID(ctx context.Context, id string) (Employee, error) {
+	if s.err != nil {
+		return Employee{}, s.err
+	}
+	for _, x := range s.employees {
+		if x.ID == id {
+			return x, nil
+		}
+	}
+	return Employee{}, ErrNotFound
 }
 
 func (s *fakeStore) Create(ctx context.Context, in EmployeeInput) (Employee, error) {
@@ -97,6 +113,13 @@ func TestHandlerStatusCodes(t *testing.T) {
 		wantStatus int
 	}{
 		{"список", "GET", "/employees", "", http.StatusOK},
+		{"список: страница", "GET", "/employees?limit=1&offset=1", "", http.StatusOK},
+		{"список: limit больше максимума", "GET", "/employees?limit=101", "", http.StatusBadRequest},
+		{"список: offset отрицательный", "GET", "/employees?offset=-1", "", http.StatusBadRequest},
+
+		{"по id", "GET", "/employees/00000000-0000-0000-0000-000000000001", "", http.StatusOK},
+		{"по id: нет такого", "GET", "/employees/00000000-0000-0000-0000-000000000999", "", http.StatusNotFound},
+		{"по id: id не UUID", "GET", "/employees/abc", "", http.StatusBadRequest},
 
 		{"создание", "POST", "/employees", `{"name":"Анна"}`, http.StatusCreated},
 		{"создание: пустое имя", "POST", "/employees", `{"name":"  "}`, http.StatusBadRequest},
@@ -131,6 +154,7 @@ func TestHandlerStoreError(t *testing.T) {
 		method, path, body string
 	}{
 		{"GET", "/employees", ""},
+		{"GET", "/employees/00000000-0000-0000-0000-000000000001", ""},
 		{"POST", "/employees", `{"name":"x"}`},
 		{"PUT", "/employees/00000000-0000-0000-0000-000000000001", `{"name":"x"}`},
 		{"DELETE", "/employees/00000000-0000-0000-0000-000000000001", ""},
@@ -161,6 +185,17 @@ func TestListResponseFormat(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !got.Success || got.Count != 2 || len(got.Data) != 2 || got.Data[1].Name != "Борис" {
+		t.Errorf("получили %+v", got)
+	}
+}
+
+func TestListPagination(t *testing.T) {
+	rec := do(t, newFakeStore("Анна", "Борис", "Вера"), "GET", "/employees?limit=1&offset=1", "")
+	var got httpx.ListResponse[Employee]
+	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Count != 3 || len(got.Data) != 1 || got.Data[0].ID != uid(2) || got.Pagination != (httpx.Page{Limit: 1, Offset: 1}) {
 		t.Errorf("получили %+v", got)
 	}
 }

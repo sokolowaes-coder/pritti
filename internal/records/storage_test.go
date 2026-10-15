@@ -47,7 +47,7 @@ func TestStorageCRUD(t *testing.T) {
 		t.Fatal(err)
 	}
 	if created.ID == "" || created.Name != "первая" || created.Description != "описание" || created.CreatedAt.IsZero() ||
-		created.ClientID == nil || *created.ClientID != clientID || created.EmployeeID == nil || *created.EmployeeID != employeeID {
+		created.ClientID != clientID || created.EmployeeID != employeeID {
 		t.Errorf("Create вернул %+v", created)
 	}
 
@@ -165,6 +165,7 @@ func TestStorageListFilters(t *testing.T) {
 		{"фильтры вместе (AND)", ListFilter{FullText: str("массаж"), IDs: []string{ids["Массаж"], ids["Пилинг"]}}, []string{"Массаж"}, 1},
 		{"пагинация: count — всего, data — страница", ListFilter{Limit: 2, Offset: 1}, []string{"Лазерная депиляция", "Чистка лица"}, 5},
 		{"offset за концом", ListFilter{Limit: 2, Offset: 10}, []string{}, 5},
+		{"offset за концом с фильтром", ListFilter{FullText: str("лазер"), Limit: 2, Offset: 10}, []string{}, 2},
 	}
 
 	for _, tt := range tests {

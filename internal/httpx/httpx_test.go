@@ -2,6 +2,7 @@ package httpx
 
 import (
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -83,5 +84,37 @@ func TestIsUUID(t *testing.T) {
 		if IsUUID(s) {
 			t.Errorf("IsUUID(%q) = true", s)
 		}
+	}
+}
+
+func TestParsePage(t *testing.T) {
+	tests := []struct {
+		query   string
+		want    Page
+		wantErr string
+	}{
+		{"", Page{Limit: DefaultLimit}, ""},
+		{"limit=5&offset=10", Page{Limit: 5, Offset: 10}, ""},
+		{"limit=100", Page{Limit: 100}, ""},
+		{"limit=101", Page{}, "limit"},
+		{"limit=0", Page{}, "limit"},
+		{"limit=abc", Page{}, "limit"},
+		{"offset=-1", Page{}, "offset"},
+		{"offset=abc", Page{}, "offset"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.query, func(t *testing.T) {
+			q, _ := url.ParseQuery(tt.query)
+			got, err := ParsePage(q)
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Errorf("ошибка = %v, ожидали про %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil || got != tt.want {
+				t.Errorf("получили %+v, %v; ожидали %+v", got, err, tt.want)
+			}
+		})
 	}
 }

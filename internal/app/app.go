@@ -78,6 +78,12 @@ func New(ctx context.Context, cfg Config) (h http.Handler, close func(), err err
 		return nil, nil, err
 	}
 
+	return NewHandler(db, cfg), db.Close, nil
+}
+
+// NewHandler собирает роуты и middleware поверх готового пула БД.
+// Отдельно от New, чтобы тесты могли передать свою БД без миграций и переменных окружения.
+func NewHandler(db *pgxpool.Pool, cfg Config) http.Handler {
 	mux := http.NewServeMux()
 	records.NewHandler(records.NewStorage(db), cfg.Location).Register(mux)
 	clients.NewHandler(clients.NewStorage(db)).Register(mux)
@@ -85,13 +91,12 @@ func New(ctx context.Context, cfg Config) (h http.Handler, close func(), err err
 	mux.HandleFunc("GET /healthz", health.Handler(db))
 	docs.Register(mux)
 
-	h = middleware.Chain(mux,
+	return middleware.Chain(mux,
 		middleware.Logging(cfg.Logger),
 		middleware.Recover(cfg.Logger),
 		middleware.APIKey(cfg.APIKey, publicPaths...),
 		middleware.Timeout(requestTimeout),
 	)
-	return h, db.Close, nil
 }
 
 var errMissingDB = errors.New("не задана переменная окружения DATABASE_URL")

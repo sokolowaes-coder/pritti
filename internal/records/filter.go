@@ -3,20 +3,14 @@ package records
 import (
 	"fmt"
 	"net/url"
-	"strconv"
 	"strings"
 	"time"
 
 	"pritti/internal/httpx"
 )
 
-const (
-	defaultLimit = 20
-	maxLimit     = 100
-
-	// dateLayout — формат дат как в примере: без часового пояса, время местное (TZ сервера).
-	dateLayout = "2006-01-02T15:04:05"
-)
+// dateLayout — формат дат как в примере: без часового пояса, время местное (TZ сервера).
+const dateLayout = "2006-01-02T15:04:05"
 
 // fullTextColumns — поля, по которым можно искать, и их колонки в БД.
 // Только этот список попадает в SQL, поэтому подставить туда чужое нельзя.
@@ -38,7 +32,11 @@ type ListFilter struct {
 
 // Даты без пояса считаются в loc (часовой пояс сервера).
 func ParseListFilter(q url.Values, loc *time.Location) (ListFilter, error) {
-	f := ListFilter{Limit: defaultLimit}
+	page, err := httpx.ParsePage(q)
+	if err != nil {
+		return ListFilter{}, err
+	}
+	f := ListFilter{Limit: page.Limit, Offset: page.Offset}
 
 	if v := strings.TrimSpace(q.Get("fullText")); v != "" {
 		f.FullText = &v
@@ -57,7 +55,6 @@ func ParseListFilter(q url.Values, loc *time.Location) (ListFilter, error) {
 		f.IDs = append(f.IDs, strings.ToLower(s))
 	}
 
-	var err error
 	if f.DateStart, err = parseDate(q.Get("dateStart"), false, loc); err != nil {
 		return f, fmt.Errorf("dateStart: %w", err)
 	}
@@ -68,16 +65,6 @@ func ParseListFilter(q url.Values, loc *time.Location) (ListFilter, error) {
 		return f, fmt.Errorf("dateStart позже dateEnd")
 	}
 
-	if v := q.Get("limit"); v != "" {
-		if f.Limit, err = strconv.Atoi(v); err != nil || f.Limit < 1 || f.Limit > maxLimit {
-			return f, fmt.Errorf("limit: число от 1 до %d", maxLimit)
-		}
-	}
-	if v := q.Get("offset"); v != "" {
-		if f.Offset, err = strconv.Atoi(v); err != nil || f.Offset < 0 {
-			return f, fmt.Errorf("offset: число от 0")
-		}
-	}
 	return f, nil
 }
 
@@ -123,7 +110,7 @@ type ListResponse struct {
 	Success    bool           `json:"success"`
 	Filters    ListFiltersOut `json:"filters"`
 	Count      int            `json:"count"` // сколько записей подходит под фильтры всего
-	Pagination Pagination     `json:"pagination"`
+	Pagination httpx.Page     `json:"pagination"`
 	Data       []Record       `json:"data"`
 }
 
@@ -143,11 +130,6 @@ type FullTextFilter struct {
 	Fields []string `json:"fields"`
 }
 
-type Pagination struct {
-	Limit  int `json:"limit"`
-	Offset int `json:"offset"`
-}
-
 func newListResponse(f ListFilter, records []Record, total int, loc *time.Location) ListResponse {
 	return ListResponse{
 		Success: true,
@@ -158,7 +140,7 @@ func newListResponse(f ListFilter, records []Record, total int, loc *time.Locati
 			DateEnd:   FilterValue[*string]{Value: formatDate(f.DateEnd, loc)},
 		},
 		Count:      total,
-		Pagination: Pagination{Limit: f.Limit, Offset: f.Offset},
+		Pagination: httpx.Page{Limit: f.Limit, Offset: f.Offset},
 		Data:       records,
 	}
 }

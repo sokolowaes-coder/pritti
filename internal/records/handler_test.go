@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"pritti/internal/httpx"
 )
 
 // uid — n-й тестовый id: 00000000-0000-0000-0000-000000000001 и т. д.
@@ -77,7 +79,7 @@ func (s *fakeStore) Create(ctx context.Context, in RecordInput) (Record, error) 
 		return Record{}, err
 	}
 	rec := Record{ID: uid(s.nextID), Name: in.Name, Description: in.Description,
-		ClientID: &in.ClientID, EmployeeID: &in.EmployeeID, CreatedAt: time.Now()}
+		ClientID: in.ClientID, EmployeeID: in.EmployeeID, CreatedAt: time.Now()}
 	s.nextID++
 	s.records = append(s.records, rec)
 	return rec, nil
@@ -94,8 +96,8 @@ func (s *fakeStore) Update(ctx context.Context, id string, in RecordInput) (Reco
 			}
 			s.records[i].Name = in.Name
 			s.records[i].Description = in.Description
-			s.records[i].ClientID = &in.ClientID
-			s.records[i].EmployeeID = &in.EmployeeID
+			s.records[i].ClientID = in.ClientID
+			s.records[i].EmployeeID = in.EmployeeID
 			return s.records[i], nil
 		}
 	}
@@ -230,7 +232,7 @@ func TestListResponseFormat(t *testing.T) {
 			DateEnd   struct{ Value *string }  `json:"dateEnd"`
 		} `json:"filters"`
 		Count      int        `json:"count"`
-		Pagination Pagination `json:"pagination"`
+		Pagination httpx.Page `json:"pagination"`
 		Data       []Record   `json:"data"`
 	}
 	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
@@ -240,7 +242,7 @@ func TestListResponseFormat(t *testing.T) {
 	if !got.Success || got.Count != 3 || len(got.Data) != 2 || got.Data[0].Name != "вторая" {
 		t.Errorf("success=%v count=%d data=%+v", got.Success, got.Count, got.Data)
 	}
-	if got.Pagination != (Pagination{Limit: 2, Offset: 1}) {
+	if got.Pagination != (httpx.Page{Limit: 2, Offset: 1}) {
 		t.Errorf("pagination = %+v", got.Pagination)
 	}
 	f := got.Filters
@@ -306,7 +308,7 @@ func TestCreateReturnsRecord(t *testing.T) {
 		t.Fatalf("ответ не JSON: %v", err)
 	}
 	if got.ID != uid(1) || got.Name != "новая" || got.Description != "описание" ||
-		got.ClientID == nil || *got.ClientID != uid(1) || got.EmployeeID == nil || *got.EmployeeID != uid(1) {
+		got.ClientID != uid(1) || got.EmployeeID != uid(1) {
 		t.Errorf("получили %+v", got)
 	}
 	if len(store.records) != 1 {
@@ -344,5 +346,12 @@ func TestCreateRecordUnknownClient(t *testing.T) {
 	rec := do(t, newFakeStore(), "POST", "/records", `{"name":"x","client_id":"00000000-0000-0000-0000-000000000999","employee_id":"00000000-0000-0000-0000-000000000001"}`)
 	if !strings.Contains(rec.Body.String(), "клиент не найден") {
 		t.Errorf("тело = %s", rec.Body)
+	}
+}
+
+func TestCreateRecordUnknownEmployee(t *testing.T) {
+	rec := do(t, newFakeStore(), "POST", "/records", `{"name":"x","client_id":"00000000-0000-0000-0000-000000000001","employee_id":"00000000-0000-0000-0000-000000000999"}`)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "сотрудник не найден") {
+		t.Errorf("статус = %d, тело = %s", rec.Code, rec.Body)
 	}
 }

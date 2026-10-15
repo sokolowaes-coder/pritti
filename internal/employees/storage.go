@@ -9,10 +9,13 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// Ошибки хранилища — маркеры для errors.Is. Что ответить пользователю, решает хендлер.
 var (
-	ErrNotFound   = errors.New("сотрудник не найден")
-	ErrHasRecords = errors.New("у сотрудника есть записи, сначала удалите или переназначьте их")
+	ErrNotFound   = errors.New("employee not found")
+	ErrHasRecords = errors.New("employee has records")
 )
+
+const employeeColumns = `id, name, created_at`
 
 type Storage struct {
 	db *pgxpool.Pool
@@ -22,36 +25,64 @@ func NewStorage(db *pgxpool.Pool) *Storage {
 	return &Storage{db: db}
 }
 
-func (s *Storage) List(ctx context.Context) ([]Employee, error) {
-	rows, err := s.db.Query(ctx, `SELECT id, name, created_at FROM employees ORDER BY created_at, id`)
+// List возвращает limit сотрудников, начиная с offset, и сколько сотрудников всего.
+func (s *Storage) List(ctx context.Context, limit, offset int) ([]Employee, int, error) {
+	// count(*) OVER() считается до LIMIT: общее число приходит тем же запросом,
+	// что и страница, поэтому они не разойдутся, если таблица меняется между запросами.
+	rows, err := s.db.Query(ctx,
+		`SELECT `+employeeColumns+`, count(*) OVER() FROM employees ORDER BY created_at, id LIMIT $1 OFFSET $2`,
+		limit, offset,
+	)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-	list, err := pgx.CollectRows(rows, pgx.RowToStructByPos[Employee])
+	var total int
+	list, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (Employee, error) {
+		var e Employee
+		err := row.Scan(&e.ID, &e.Name, &e.CreatedAt, &total)
+		return e, err
+	})
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-	if list == nil {
-		list = []Employee{}
+	if len(list) > 0 {
+		return list, total, nil
 	}
-	return list, nil
+	// Пустая страница — строк с count нет: offset мог уйти за конец списка. Считаем отдельно.
+	if offset > 0 {
+		if err := s.db.QueryRow(ctx, `SELECT count(*) FROM employees`).Scan(&total); err != nil {
+			return nil, 0, err
+		}
+	}
+	return []Employee{}, total, nil
 }
 
-func (s *Storage) Create(ctx context.Context, in EmployeeInput) (Employee, error) {
+func scanEmployee(row pgx.Row) (Employee, error) {
 	var e Employee
-	err := s.db.QueryRow(ctx,
-		`INSERT INTO employees (name) VALUES ($1) RETURNING id, name, created_at`,
-		in.Name,
-	).Scan(&e.ID, &e.Name, &e.CreatedAt)
+	err := row.Scan(&e.ID, &e.Name, &e.CreatedAt)
 	return e, err
 }
 
+func (s *Storage) GetByID(ctx context.Context, id string) (Employee, error) {
+	e, err := scanEmployee(s.db.QueryRow(ctx, `SELECT `+employeeColumns+` FROM employees WHERE id = $1`, id))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Employee{}, ErrNotFound
+	}
+	return e, err
+}
+
+func (s *Storage) Create(ctx context.Context, in EmployeeInput) (Employee, error) {
+	return scanEmployee(s.db.QueryRow(ctx,
+		`INSERT INTO employees (name) VALUES ($1) RETURNING `+employeeColumns,
+		in.Name,
+	))
+}
+
 func (s *Storage) Update(ctx context.Context, id string, in EmployeeInput) (Employee, error) {
-	var e Employee
-	err := s.db.QueryRow(ctx,
-		`UPDATE employees SET name = $2 WHERE id = $1 RETURNING id, name, created_at`,
+	e, err := scanEmployee(s.db.QueryRow(ctx,
+		`UPDATE employees SET name = $2 WHERE id = $1 RETURNING `+employeeColumns,
 		id, in.Name,
-	).Scan(&e.ID, &e.Name, &e.CreatedAt)
+	))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Employee{}, ErrNotFound
 	}

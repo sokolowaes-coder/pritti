@@ -10,8 +10,15 @@ import (
 
 const maxNameLen = 200
 
+// Тексты ошибок для пользователя API.
+const (
+	msgNotFound   = "сотрудник не найден"
+	msgHasRecords = "у сотрудника есть записи, сначала удалите или переназначьте их"
+)
+
 type EmployeeStore interface {
-	List(ctx context.Context) ([]Employee, error)
+	List(ctx context.Context, limit, offset int) ([]Employee, int, error)
+	GetByID(ctx context.Context, id string) (Employee, error)
 	Create(ctx context.Context, in EmployeeInput) (Employee, error)
 	Update(ctx context.Context, id string, in EmployeeInput) (Employee, error)
 	Delete(ctx context.Context, id string) error
@@ -28,12 +35,34 @@ func NewHandler(storage EmployeeStore) *Handler {
 }
 
 func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
-	list, err := h.storage.List(r.Context())
+	page, err := httpx.ParsePage(r.URL.Query())
+	if err != nil {
+		httpx.WriteError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	list, total, err := h.storage.List(r.Context(), page.Limit, page.Offset)
 	if err != nil {
 		httpx.InternalError(w, "list employees", err)
 		return
 	}
-	httpx.WriteJSON(w, http.StatusOK, map[string]any{"success": true, "count": len(list), "data": list})
+	httpx.WriteJSON(w, http.StatusOK, httpx.ListResponse[Employee]{Success: true, Count: total, Pagination: page, Data: list})
+}
+
+func (h *Handler) GetByID(w http.ResponseWriter, r *http.Request) {
+	id, ok := httpx.ParseID(w, r)
+	if !ok {
+		return
+	}
+	e, err := h.storage.GetByID(r.Context(), id)
+	if errors.Is(err, ErrNotFound) {
+		httpx.WriteError(w, http.StatusNotFound, msgNotFound)
+		return
+	}
+	if err != nil {
+		httpx.InternalError(w, "get employee", err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, e)
 }
 
 func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
@@ -60,7 +89,7 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 	e, err := h.storage.Update(r.Context(), id, in)
 	if errors.Is(err, ErrNotFound) {
-		httpx.WriteError(w, http.StatusNotFound, err.Error())
+		httpx.WriteError(w, http.StatusNotFound, msgNotFound)
 		return
 	}
 	if err != nil {
@@ -78,9 +107,9 @@ func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 	err := h.storage.Delete(r.Context(), id)
 	switch {
 	case errors.Is(err, ErrNotFound):
-		httpx.WriteError(w, http.StatusNotFound, err.Error())
+		httpx.WriteError(w, http.StatusNotFound, msgNotFound)
 	case errors.Is(err, ErrHasRecords):
-		httpx.WriteError(w, http.StatusConflict, err.Error())
+		httpx.WriteError(w, http.StatusConflict, msgHasRecords)
 	case err != nil:
 		httpx.InternalError(w, "delete employee", err)
 	default:
@@ -91,6 +120,7 @@ func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /employees", h.List)
 	mux.HandleFunc("POST /employees", h.Create)
+	mux.HandleFunc("GET /employees/{id}", h.GetByID)
 	mux.HandleFunc("PUT /employees/{id}", h.Update)
 	mux.HandleFunc("DELETE /employees/{id}", h.Delete)
 }

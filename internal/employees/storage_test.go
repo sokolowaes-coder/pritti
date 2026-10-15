@@ -16,9 +16,9 @@ func TestStorageCRUD(t *testing.T) {
 	s := NewStorage(db)
 	ctx := context.Background()
 
-	list, err := s.List(ctx)
-	if err != nil || list == nil || len(list) != 0 {
-		t.Fatalf("пустой список: %v, %v", list, err)
+	list, total, err := s.List(ctx, 20, 0)
+	if err != nil || list == nil || len(list) != 0 || total != 0 {
+		t.Fatalf("пустой список: %v, %d, %v", list, total, err)
 	}
 
 	created, err := s.Create(ctx, EmployeeInput{Name: "Анна"})
@@ -31,15 +31,20 @@ func TestStorageCRUD(t *testing.T) {
 		t.Errorf("Update: %+v, %v", updated, err)
 	}
 
-	list, err = s.List(ctx)
-	if err != nil || len(list) != 1 || list[0].Name != "Ольга" {
+	got, err := s.GetByID(ctx, created.ID)
+	if err != nil || got != updated {
+		t.Errorf("GetByID: %+v, %v", got, err)
+	}
+
+	list, total, err = s.List(ctx, 20, 0)
+	if err != nil || total != 1 || len(list) != 1 || list[0].Name != "Ольга" {
 		t.Errorf("List: %+v, %v", list, err)
 	}
 
 	if err := s.Delete(ctx, created.ID); err != nil {
 		t.Errorf("Delete: %v", err)
 	}
-	if list, _ = s.List(ctx); len(list) != 0 {
+	if list, _, _ = s.List(ctx, 20, 0); len(list) != 0 {
 		t.Errorf("после удаления осталось %v", list)
 	}
 }
@@ -53,6 +58,9 @@ func TestStorageNotFound(t *testing.T) {
 	}
 	if err := s.Delete(ctx, missingID); !errors.Is(err, ErrNotFound) {
 		t.Errorf("Delete: %v, ожидали ErrNotFound", err)
+	}
+	if _, err := s.GetByID(ctx, missingID); !errors.Is(err, ErrNotFound) {
+		t.Errorf("GetByID: %v, ожидали ErrNotFound", err)
 	}
 }
 
@@ -80,5 +88,36 @@ func TestStorageDeleteWithRecords(t *testing.T) {
 
 	if err := s.Delete(ctx, e.ID); !errors.Is(err, ErrHasRecords) {
 		t.Errorf("Delete: %v, ожидали ErrHasRecords", err)
+	}
+}
+
+func TestStorageListPagination(t *testing.T) {
+	s := NewStorage(testdb.New(t))
+	ctx := context.Background()
+	for _, name := range []string{"Анна", "Борис", "Вера"} {
+		if _, err := s.Create(ctx, EmployeeInput{Name: name}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	tests := []struct {
+		limit, offset int
+		wantNames     []string
+	}{
+		{2, 0, []string{"Анна", "Борис"}},
+		{2, 2, []string{"Вера"}},
+		{2, 10, []string{}}, // за концом списка: страница пустая, но total известен
+	}
+	for _, tt := range tests {
+		list, total, err := s.List(ctx, tt.limit, tt.offset)
+		if err != nil || total != 3 || len(list) != len(tt.wantNames) {
+			t.Errorf("List(%d, %d) = %+v, %d, %v", tt.limit, tt.offset, list, total, err)
+			continue
+		}
+		for i, e := range list {
+			if e.Name != tt.wantNames[i] {
+				t.Errorf("List(%d, %d)[%d] = %q, ожидали %q", tt.limit, tt.offset, i, e.Name, tt.wantNames[i])
+			}
+		}
 	}
 }
