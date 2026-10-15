@@ -3,6 +3,7 @@ package employees
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"pritti/internal/testdb"
@@ -119,5 +120,64 @@ func TestStorageListPagination(t *testing.T) {
 				t.Errorf("List(%d, %d)[%d] = %q, ожидали %q", tt.limit, tt.offset, i, e.Name, tt.wantNames[i])
 			}
 		}
+	}
+}
+
+func TestStorageWorkingHours(t *testing.T) {
+	db := testdb.New(t)
+	s := NewStorage(db)
+	ctx := context.Background()
+
+	e, err := s.Create(ctx, EmployeeInput{Name: "Анна"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if days, err := s.WorkingHours(ctx, e.ID); err != nil || days == nil || len(days) != 0 {
+		t.Errorf("новый мастер: %v, %v; ожидали пустой график", days, err)
+	}
+
+	week := []WorkingDay{{Weekday: 5, Start: "12:00", End: "21:00"}, {Weekday: 1, Start: "09:30", End: "18:00"}}
+	if err := s.SetWorkingHours(ctx, e.ID, week); err != nil {
+		t.Fatal(err)
+	}
+	days, err := s.WorkingHours(ctx, e.ID)
+	want := []WorkingDay{{Weekday: 1, Start: "09:30", End: "18:00"}, {Weekday: 5, Start: "12:00", End: "21:00"}}
+	if err != nil || fmt.Sprint(days) != fmt.Sprint(want) {
+		t.Errorf("график по дням недели: %v, %v; ожидали %v", days, err, want)
+	}
+
+	// Замена целиком: старые дни уходят.
+	if err := s.SetWorkingHours(ctx, e.ID, []WorkingDay{{Weekday: 3, Start: "10:00", End: "19:00"}}); err != nil {
+		t.Fatal(err)
+	}
+	if days, _ := s.WorkingHours(ctx, e.ID); len(days) != 1 || days[0].Weekday != 3 {
+		t.Errorf("после замены: %v", days)
+	}
+
+	// Ошибка посреди замены откатывает всю транзакцию: старый график остаётся.
+	bad := []WorkingDay{{Weekday: 1, Start: "10:00", End: "19:00"}, {Weekday: 2, Start: "19:00", End: "10:00"}}
+	if err := s.SetWorkingHours(ctx, e.ID, bad); err == nil {
+		t.Error("БД приняла конец раньше начала, ожидали ошибку CHECK")
+	}
+	if days, _ := s.WorkingHours(ctx, e.ID); len(days) != 1 || days[0].Weekday != 3 {
+		t.Errorf("после неудачной замены график изменился: %v", days)
+	}
+
+	for name, err := range map[string]error{
+		"WorkingHours":    func() error { _, err := s.WorkingHours(ctx, missingID); return err }(),
+		"SetWorkingHours": s.SetWorkingHours(ctx, missingID, nil),
+	} {
+		if !errors.Is(err, ErrNotFound) {
+			t.Errorf("%s несуществующего мастера: %v, ожидали ErrNotFound", name, err)
+		}
+	}
+
+	// Мастера удалили — график удаляется вместе с ним (ON DELETE CASCADE).
+	if err := s.Delete(ctx, e.ID); err != nil {
+		t.Fatal(err)
+	}
+	var left int
+	if err := db.QueryRow(ctx, `SELECT count(*) FROM employee_working_hours`).Scan(&left); err != nil || left != 0 {
+		t.Errorf("после удаления мастера осталось %d дней графика, %v", left, err)
 	}
 }

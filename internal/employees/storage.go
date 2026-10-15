@@ -104,3 +104,60 @@ func (s *Storage) Delete(ctx context.Context, id string) error {
 	}
 	return nil
 }
+
+// WorkingHours возвращает рабочие часы мастера по дням недели. ErrNotFound — мастера нет.
+func (s *Storage) WorkingHours(ctx context.Context, employeeID string) ([]WorkingDay, error) {
+	rows, err := s.db.Query(ctx,
+		`SELECT weekday, to_char(start_time, 'HH24:MI'), to_char(end_time, 'HH24:MI')
+		 FROM employee_working_hours WHERE employee_id = $1 ORDER BY weekday`,
+		employeeID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	days, err := pgx.CollectRows(rows, pgx.RowToStructByPos[WorkingDay])
+	if err != nil {
+		return nil, err
+	}
+	if len(days) > 0 {
+		return days, nil
+	}
+	// Пустой график — либо мастер не работает ни дня, либо мастера нет вовсе.
+	var exists bool
+	if err := s.db.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM employees WHERE id = $1)`, employeeID).Scan(&exists); err != nil {
+		return nil, err
+	}
+	if !exists {
+		return nil, ErrNotFound
+	}
+	return []WorkingDay{}, nil
+}
+
+// SetWorkingHours заменяет весь график мастера в одной транзакции: в БД оказывается
+// либо новый график целиком, либо остаётся старый — половины не бывает.
+func (s *Storage) SetWorkingHours(ctx context.Context, employeeID string, days []WorkingDay) error {
+	return pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
+		// FOR UPDATE блокирует строку мастера до конца транзакции: два одновременных
+		// изменения графика идут по очереди, а не удаляют и вставляют дни вперемешку.
+		var found bool
+		err := tx.QueryRow(ctx, `SELECT true FROM employees WHERE id = $1 FOR UPDATE`, employeeID).Scan(&found)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `DELETE FROM employee_working_hours WHERE employee_id = $1`, employeeID); err != nil {
+			return err
+		}
+		for _, d := range days {
+			if _, err := tx.Exec(ctx,
+				`INSERT INTO employee_working_hours (employee_id, weekday, start_time, end_time) VALUES ($1, $2, $3::time, $4::time)`,
+				employeeID, d.Weekday, d.Start, d.End,
+			); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}

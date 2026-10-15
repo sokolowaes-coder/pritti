@@ -18,6 +18,7 @@ type fakeStore struct {
 	employees  []Employee
 	nextID     int
 	hasRecords map[string]bool // у каких сотрудников есть записи — их нельзя удалить
+	hours      map[string][]WorkingDay
 	err        error
 }
 
@@ -89,6 +90,27 @@ func (s *fakeStore) Delete(ctx context.Context, id string) error {
 		}
 	}
 	return ErrNotFound
+}
+
+func (s *fakeStore) WorkingHours(ctx context.Context, employeeID string) ([]WorkingDay, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	if _, err := s.GetByID(ctx, employeeID); err != nil {
+		return nil, err
+	}
+	return append([]WorkingDay{}, s.hours[employeeID]...), nil
+}
+
+func (s *fakeStore) SetWorkingHours(ctx context.Context, employeeID string, days []WorkingDay) error {
+	if _, err := s.WorkingHours(ctx, employeeID); err != nil {
+		return err
+	}
+	if s.hours == nil {
+		s.hours = map[string][]WorkingDay{}
+	}
+	s.hours[employeeID] = days
+	return nil
 }
 
 // uid — n-й тестовый id: 00000000-0000-0000-0000-000000000001 и т. д.
@@ -221,5 +243,35 @@ func TestCreateAndUpdate(t *testing.T) {
 	do(t, store, "PUT", "/employees/00000000-0000-0000-0000-000000000001", `{"name":"Ольга"}`)
 	if store.employees[0].Name != "Ольга" {
 		t.Errorf("после изменения %+v", store.employees[0])
+	}
+}
+
+func TestSchedule(t *testing.T) {
+	const path = "/employees/00000000-0000-0000-0000-000000000001/schedule"
+	tests := []struct {
+		name, method, path, body string
+		wantStatus               int
+		wantInBody               string
+	}{
+		{"пустой график", "GET", path, "", 200, `"days":[]`},
+		{"нет мастера", "GET", "/employees/00000000-0000-0000-0000-000000000999/schedule", "", 404, "employee_not_found"},
+		{"задать", "PUT", path, `{"days":[{"weekday":1,"start":"9:00","end":"18:00"},{"weekday":6,"start":"10:00","end":"15:30"}]}`, 200,
+			`"days":[{"weekday":1,"start":"09:00","end":"18:00"},{"weekday":6,"start":"10:00","end":"15:30"}]`},
+		{"пустой — не работает ни дня", "PUT", path, `{"days":[]}`, 200, `"days":[]`},
+		{"без days — тоже пустой", "PUT", path, `{}`, 200, `"days":[]`},
+		{"день недели 0", "PUT", path, `{"days":[{"weekday":0,"start":"10:00","end":"19:00"}]}`, 400, `"days[0].weekday"`},
+		{"день недели 8", "PUT", path, `{"days":[{"weekday":8,"start":"10:00","end":"19:00"}]}`, 400, `"days[0].weekday"`},
+		{"день дважды", "PUT", path, `{"days":[{"weekday":1,"start":"10:00","end":"12:00"},{"weekday":1,"start":"13:00","end":"19:00"}]}`, 400, `"days[1].weekday"`},
+		{"кривое время", "PUT", path, `{"days":[{"weekday":1,"start":"10","end":"25:00"}]}`, 400, `"days[0].end"`},
+		{"конец раньше начала", "PUT", path, `{"days":[{"weekday":1,"start":"19:00","end":"10:00"}]}`, 400, "должно быть позже start"},
+		{"нет мастера", "PUT", "/employees/00000000-0000-0000-0000-000000000999/schedule", `{"days":[]}`, 404, "employee_not_found"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := do(t, newFakeStore("Анна"), tt.method, tt.path, tt.body)
+			if rec.Code != tt.wantStatus || !strings.Contains(rec.Body.String(), tt.wantInBody) {
+				t.Errorf("статус %d, тело %s; ожидали %d и %s", rec.Code, rec.Body, tt.wantStatus, tt.wantInBody)
+			}
+		})
 	}
 }

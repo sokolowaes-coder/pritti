@@ -3,7 +3,9 @@ package employees
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
+	"time"
 
 	"pritti/internal/httpx"
 )
@@ -25,6 +27,8 @@ type EmployeeStore interface {
 	Create(ctx context.Context, in EmployeeInput) (Employee, error)
 	Update(ctx context.Context, id string, in EmployeeInput) (Employee, error)
 	Delete(ctx context.Context, id string) error
+	WorkingHours(ctx context.Context, employeeID string) ([]WorkingDay, error)
+	SetWorkingHours(ctx context.Context, employeeID string, days []WorkingDay) error
 }
 
 var _ EmployeeStore = (*Storage)(nil)
@@ -126,6 +130,89 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /employees/{id}", h.GetByID)
 	mux.HandleFunc("PUT /employees/{id}", h.Update)
 	mux.HandleFunc("DELETE /employees/{id}", h.Delete)
+	mux.HandleFunc("GET /employees/{id}/schedule", h.GetSchedule)
+	mux.HandleFunc("PUT /employees/{id}/schedule", h.PutSchedule)
+}
+
+func (h *Handler) GetSchedule(w http.ResponseWriter, r *http.Request) {
+	id, ok := httpx.ParseID(w, r)
+	if !ok {
+		return
+	}
+	days, err := h.storage.WorkingHours(r.Context(), id)
+	if errors.Is(err, ErrNotFound) {
+		httpx.WriteError(w, http.StatusNotFound, codeNotFound, msgNotFound)
+		return
+	}
+	if err != nil {
+		httpx.InternalError(w, r, "get schedule", err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, Schedule{EmployeeID: id, Days: days})
+}
+
+// PutSchedule заменяет весь недельный график мастера тем, что пришло в теле.
+func (h *Handler) PutSchedule(w http.ResponseWriter, r *http.Request) {
+	id, ok := httpx.ParseID(w, r)
+	if !ok {
+		return
+	}
+	var in struct {
+		Days []WorkingDay `json:"days"`
+	}
+	if !httpx.DecodeJSON(w, r, &in) {
+		return
+	}
+	if checkDays(in.Days).Write(w) {
+		return
+	}
+	err := h.storage.SetWorkingHours(r.Context(), id, in.Days)
+	if errors.Is(err, ErrNotFound) {
+		httpx.WriteError(w, http.StatusNotFound, codeNotFound, msgNotFound)
+		return
+	}
+	if err != nil {
+		httpx.InternalError(w, r, "set schedule", err)
+		return
+	}
+	if in.Days == nil {
+		in.Days = []WorkingDay{}
+	}
+	httpx.WriteJSON(w, http.StatusOK, Schedule{EmployeeID: id, Days: in.Days})
+}
+
+// checkDays проверяет график: день недели 1–7 без повторов, время ЧЧ:ММ, конец позже начала.
+// Время приводится к виду 09:00, как его потом вернёт БД.
+func checkDays(days []WorkingDay) httpx.Problems {
+	p := httpx.Problems{}
+	seen := map[int]bool{}
+	for i := range days {
+		d := &days[i]
+		field := fmt.Sprintf("days[%d]", i)
+		switch {
+		case d.Weekday < 1 || d.Weekday > 7:
+			p.Add(field+".weekday", "от 1 (понедельник) до 7 (воскресенье)")
+		case seen[d.Weekday]:
+			p.Add(field+".weekday", "этот день уже есть в графике")
+		}
+		seen[d.Weekday] = true
+
+		start, startErr := time.Parse("15:04", d.Start)
+		end, endErr := time.Parse("15:04", d.End)
+		if startErr != nil {
+			p.Add(field+".start", "время в формате ЧЧ:ММ, например 10:00")
+		}
+		if endErr != nil {
+			p.Add(field+".end", "время в формате ЧЧ:ММ, например 19:00")
+		}
+		if startErr == nil && endErr == nil {
+			if !end.After(start) {
+				p.Add(field+".end", "должно быть позже start")
+			}
+			d.Start, d.End = start.Format("15:04"), end.Format("15:04")
+		}
+	}
+	return p
 }
 
 func decodeInput(w http.ResponseWriter, r *http.Request) (EmployeeInput, bool) {
