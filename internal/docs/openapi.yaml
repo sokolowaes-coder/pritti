@@ -102,6 +102,11 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+              example:
+                success: false
+                code: validation_error
+                error: "client_id: клиент не найден; ends_at: должно быть позже starts_at"
+                fields: { client_id: клиент не найден, ends_at: должно быть позже starts_at }
         "409": { $ref: "#/components/responses/EmployeeBusy" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "500": { $ref: "#/components/responses/Internal" }
@@ -119,7 +124,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Record" }
         "400": { $ref: "#/components/responses/BadRequest" }
-        "404": { $ref: "#/components/responses/NotFound" }
+        "404": { $ref: "#/components/responses/RecordNotFound" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "500": { $ref: "#/components/responses/Internal" }
     put:
@@ -137,7 +142,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Record" }
         "400": { $ref: "#/components/responses/BadRequest" }
-        "404": { $ref: "#/components/responses/NotFound" }
+        "404": { $ref: "#/components/responses/RecordNotFound" }
         "409": { $ref: "#/components/responses/EmployeeBusy" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "500": { $ref: "#/components/responses/Internal" }
@@ -147,7 +152,7 @@ paths:
       responses:
         "204": { description: Удалено }
         "400": { $ref: "#/components/responses/BadRequest" }
-        "404": { $ref: "#/components/responses/NotFound" }
+        "404": { $ref: "#/components/responses/RecordNotFound" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "500": { $ref: "#/components/responses/Internal" }
 
@@ -195,7 +200,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Client" }
         "400": { $ref: "#/components/responses/BadRequest" }
-        "404": { $ref: "#/components/responses/NotFound" }
+        "404": { $ref: "#/components/responses/ClientNotFound" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "500": { $ref: "#/components/responses/Internal" }
     put:
@@ -209,7 +214,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Client" }
         "400": { $ref: "#/components/responses/BadRequest" }
-        "404": { $ref: "#/components/responses/NotFound" }
+        "404": { $ref: "#/components/responses/ClientNotFound" }
         "409": { $ref: "#/components/responses/PhoneTaken" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "500": { $ref: "#/components/responses/Internal" }
@@ -219,8 +224,8 @@ paths:
       responses:
         "204": { description: Удалено }
         "400": { $ref: "#/components/responses/BadRequest" }
-        "404": { $ref: "#/components/responses/NotFound" }
-        "409": { $ref: "#/components/responses/HasRecords" }
+        "404": { $ref: "#/components/responses/ClientNotFound" }
+        "409": { $ref: "#/components/responses/ClientHasRecords" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "500": { $ref: "#/components/responses/Internal" }
 
@@ -267,7 +272,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Person" }
         "400": { $ref: "#/components/responses/BadRequest" }
-        "404": { $ref: "#/components/responses/NotFound" }
+        "404": { $ref: "#/components/responses/EmployeeNotFound" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "500": { $ref: "#/components/responses/Internal" }
     put:
@@ -281,7 +286,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Person" }
         "400": { $ref: "#/components/responses/BadRequest" }
-        "404": { $ref: "#/components/responses/NotFound" }
+        "404": { $ref: "#/components/responses/EmployeeNotFound" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "500": { $ref: "#/components/responses/Internal" }
     delete:
@@ -290,8 +295,8 @@ paths:
       responses:
         "204": { description: Удалено }
         "400": { $ref: "#/components/responses/BadRequest" }
-        "404": { $ref: "#/components/responses/NotFound" }
-        "409": { $ref: "#/components/responses/HasRecords" }
+        "404": { $ref: "#/components/responses/EmployeeNotFound" }
+        "409": { $ref: "#/components/responses/EmployeeHasRecords" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "500": { $ref: "#/components/responses/Internal" }
 
@@ -368,36 +373,63 @@ components:
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
+          example: { success: false, code: unauthorized, error: "нужен верный заголовок X-API-Key" }
     BadRequest:
-      description: Неверный id, JSON, фильтр, неизвестное поле, пустое или слишком длинное значение
+      description: |
+        Неверный id (`invalid_id`), JSON (`invalid_json`), фильтр (`invalid_query`)
+        или поля (`validation_error` с `fields`)
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
-    NotFound:
-      description: Не найдено
+          example: { success: false, code: invalid_id, error: "неверный id" }
+    RecordNotFound:
+      description: Записи нет
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
+          example: { success: false, code: record_not_found, error: "запись не найдена" }
+    ClientNotFound:
+      description: Клиента нет
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example: { success: false, code: client_not_found, error: "клиент не найден" }
+    EmployeeNotFound:
+      description: Сотрудника нет
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example: { success: false, code: employee_not_found, error: "сотрудник не найден" }
     PhoneTaken:
       description: Клиент с таким телефоном уже есть
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
+          example: { success: false, code: phone_taken, error: "клиент с таким телефоном уже есть" }
     EmployeeBusy:
       description: "`employee_busy` — у мастера уже есть запись, пересекающаяся с этим временем"
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
-    HasRecords:
-      description: На него ссылаются записи — сначала удалите или переназначьте их
+          example: { success: false, code: employee_busy, error: "у мастера уже есть запись, пересекающаяся с этим временем" }
+    ClientHasRecords:
+      description: На клиента ссылаются записи — сначала удалите или переназначьте их
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
+          example: { success: false, code: client_has_records, error: "у клиента есть записи, сначала удалите или переназначьте их" }
+    EmployeeHasRecords:
+      description: На сотрудника ссылаются записи — сначала удалите или переназначьте их
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example: { success: false, code: employee_has_records, error: "у сотрудника есть записи, сначала удалите или переназначьте их" }
     Internal:
       description: Ошибка сервера
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
+          example: { success: false, code: internal_error, error: "внутренняя ошибка" }
 
   schemas:
     Record:
