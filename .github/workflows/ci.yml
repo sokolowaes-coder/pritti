@@ -37,6 +37,13 @@ jobs:
       - name: go vet
         run: go vet ./...
 
+      - name: staticcheck
+        run: go run honnef.co/go/tools/cmd/staticcheck@2025.1.1 ./...
+
+      # Уязвимости в Go и зависимостях, которые реально вызывает наш код.
+      - name: govulncheck
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
+
       - name: go test
         env:
           TEST_DATABASE_URL: postgres://app:app@localhost:5432/pritti?sslmode=disable

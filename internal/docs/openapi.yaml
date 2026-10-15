@@ -6,8 +6,18 @@ info:
     Записи, клиенты и сотрудники. У записи обязательны клиент и сотрудник —
     создайте их сначала через `POST /clients` и `POST /employees`.
 
-    Если на сервере задан `API_KEY`, каждый запрос должен нести заголовок `X-API-Key`
+    Каждый запрос, кроме `/healthz` и документации, должен нести заголовок `X-API-Key`
     (кнопка **Authorize**). Без ключа — `401`.
+
+    Запись — визит клиента к мастеру с `starts_at` до `ends_at`. У одного мастера записи
+    не пересекаются (отменённые не в счёт) — иначе `409 employee_busy`.
+
+    Ошибки: `{"success": false, "code": "...", "error": "..."}`. `code` не меняется — по нему
+    и проверяйте; `error` — текст для людей. У `validation_error` есть ещё `fields`:
+    ошибки по полям, все сразу.
+
+    Не больше 20 запросов в секунду с одного IP (всплеском до 40), иначе `429 rate_limited`.
+    В каждом ответе есть заголовок `X-Request-ID` — по нему запрос ищется в логах сервера.
 servers:
   - url: /
 security:
@@ -39,13 +49,28 @@ paths:
           description: Список id (UUID) через запятую
           schema: { type: string }
           example: 01a140dc-0c34-7abb-8d6c-36e2d1879e0d,01a140dc-0c0f-7915-b950-f3a9772c93d8
+        - name: employeeId
+          in: query
+          description: Только записи этих мастеров (UUID через запятую)
+          schema: { type: string }
+        - name: clientId
+          in: query
+          description: Только записи этих клиентов (UUID через запятую)
+          schema: { type: string }
+        - name: status
+          in: query
+          description: Только с этими статусами, через запятую
+          schema: { type: string }
+          example: scheduled,completed
         - name: dateStart
           in: query
-          description: created_at не раньше. `2026-09-27` или `2026-09-27T10:00:00`, пояс сервера.
+          description: |
+            Визит начинается не раньше. `2026-09-27`, `2026-09-27T10:00:00` (пояс сервера)
+            или `2026-09-27T10:00:00+03:00`.
           schema: { type: string }
         - name: dateEnd
           in: query
-          description: created_at не позже. Дата без времени — до конца дня.
+          description: Визит начинается не позже. Дата без времени — до конца дня.
           schema: { type: string }
         - $ref: "#/components/parameters/Limit"
         - $ref: "#/components/parameters/Offset"
@@ -73,10 +98,11 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Record" }
         "400":
-          description: Неверный JSON, пустое имя, нет client_id/employee_id или такого клиента/сотрудника нет
+          description: Ошибки полей (все сразу), в том числе нет такого клиента или сотрудника
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+        "409": { $ref: "#/components/responses/EmployeeBusy" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "500": { $ref: "#/components/responses/Internal" }
 
@@ -112,6 +138,7 @@ paths:
               schema: { $ref: "#/components/schemas/Record" }
         "400": { $ref: "#/components/responses/BadRequest" }
         "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/EmployeeBusy" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "500": { $ref: "#/components/responses/Internal" }
     delete:
@@ -356,6 +383,11 @@ components:
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
+    EmployeeBusy:
+      description: "`employee_busy` — у мастера уже есть запись, пересекающаяся с этим временем"
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
     HasRecords:
       description: На него ссылаются записи — сначала удалите или переназначьте их
       content:
@@ -376,16 +408,38 @@ components:
         description: { type: string, example: кабинет 1 }
         client_id: { type: string, format: uuid, example: 01a140dc-0b11-7c2e-9d4f-5a6b7c8d9e0f }
         employee_id: { type: string, format: uuid, example: 01a140dc-0b22-7d3f-8e5a-6b7c8d9e0f1a }
-        created_at: { type: string, format: date-time }
+        starts_at: { type: string, format: date-time, example: "2026-10-17T07:00:00Z" }
+        ends_at: { type: string, format: date-time, example: "2026-10-17T08:00:00Z" }
+        status: { $ref: "#/components/schemas/Status" }
+        created_at: { type: string, format: date-time, description: Когда запись внесли в систему }
+
+    Status:
+      type: string
+      enum: [scheduled, completed, cancelled, no_show]
+      description: |
+        `scheduled` — запланирована, `completed` — клиент пришёл, `cancelled` — отменена
+        (время мастера свободно), `no_show` — клиент не пришёл.
+      example: scheduled
 
     RecordInput:
       type: object
-      required: [name, client_id, employee_id]
+      required: [name, client_id, employee_id, starts_at, ends_at]
       properties:
         name: { type: string, maxLength: 200, example: Чистка лица }
         description: { type: string, maxLength: 2000, default: "", example: кабинет 1 }
         client_id: { type: string, format: uuid, example: 01a140dc-0b11-7c2e-9d4f-5a6b7c8d9e0f }
         employee_id: { type: string, format: uuid, example: 01a140dc-0b22-7d3f-8e5a-6b7c8d9e0f1a }
+        starts_at:
+          type: string
+          description: Начало визита — `2026-10-17T10:00:00` (пояс сервера) или с поясом `2026-10-17T10:00:00+03:00`
+          example: "2026-10-17T10:00:00"
+        ends_at:
+          type: string
+          description: Конец визита — позже начала, не дольше 12 часов. Формат как у starts_at.
+          example: "2026-10-17T11:00:00"
+        status:
+          allOf: [{ $ref: "#/components/schemas/Status" }]
+          default: scheduled
 
     RecordList:
       type: object
@@ -400,23 +454,28 @@ components:
               properties:
                 value: { type: string, nullable: true }
                 fields: { type: array, nullable: true, items: { type: string } }
-            id:
-              type: object
-              properties:
-                value: { type: array, nullable: true, items: { type: string, format: uuid } }
+            id: { $ref: "#/components/schemas/ListFilter" }
+            employeeId: { $ref: "#/components/schemas/ListFilter" }
+            clientId: { $ref: "#/components/schemas/ListFilter" }
+            status: { $ref: "#/components/schemas/ListFilter" }
             dateStart:
               type: object
               properties:
-                value: { type: string, nullable: true, example: "2026-09-27T00:00:00" }
+                value: { type: string, nullable: true, example: "2026-09-27T00:00:00+03:00" }
             dateEnd:
               type: object
               properties:
-                value: { type: string, nullable: true, example: "2026-09-27T23:59:59" }
+                value: { type: string, nullable: true, example: "2026-09-27T23:59:59+03:00" }
         count: { type: integer, description: "Всего подходящих записей, без учёта пагинации" }
         pagination: { $ref: "#/components/schemas/Pagination" }
         data:
           type: array
           items: { $ref: "#/components/schemas/Record" }
+
+    ListFilter:
+      type: object
+      properties:
+        value: { type: array, nullable: true, items: { type: string } }
 
     Pagination:
       type: object
@@ -463,4 +522,17 @@ components:
       type: object
       properties:
         success: { type: boolean, example: false }
-        error: { type: string, example: запись не найдена }
+        code:
+          type: string
+          description: |
+            Код ошибки — не меняется, проверяйте по нему: `invalid_id`, `invalid_json`,
+            `invalid_query`, `validation_error`, `body_too_large`, `unauthorized`, `rate_limited`,
+            `record_not_found`, `client_not_found`, `employee_not_found`, `phone_taken`,
+            `client_has_records`, `employee_has_records`, `employee_busy`, `internal_error`.
+          example: validation_error
+        error: { type: string, description: Текст для человека — может меняться, example: "ends_at: должно быть позже starts_at" }
+        fields:
+          type: object
+          description: Только у validation_error — ошибки по полям
+          additionalProperties: { type: string }
+          example: { ends_at: должно быть позже starts_at }

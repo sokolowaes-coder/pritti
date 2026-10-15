@@ -3,14 +3,15 @@ package records
 import (
 	"fmt"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
 	"pritti/internal/httpx"
 )
 
-// dateLayout — формат дат как в примере: без часового пояса, время местное (TZ сервера).
-const dateLayout = "2006-01-02T15:04:05"
+// localLayout — дата и время без пояса: такое время считается в поясе сервера (APP_TZ).
+const localLayout = "2006-01-02T15:04:05"
 
 // fullTextColumns — поля, по которым можно искать, и их колонки в БД.
 // Только этот список попадает в SQL, поэтому подставить туда чужое нельзя.
@@ -19,18 +20,21 @@ var fullTextColumns = map[string]string{
 	"description": "description",
 }
 
-// ListFilter — фильтры и пагинация для списка записей. nil — фильтр не задан.
+// ListFilter — фильтры и пагинация для списка записей. nil / пусто — фильтр не задан.
 type ListFilter struct {
 	FullText       *string
 	FullTextFields []string // пусто — искать по всем полям из fullTextColumns
 	IDs            []string
-	DateStart      *time.Time // created_at >= DateStart
-	DateEnd        *time.Time // created_at <= DateEnd
+	EmployeeIDs    []string
+	ClientIDs      []string
+	Statuses       []string
+	DateStart      *time.Time // starts_at >= DateStart
+	DateEnd        *time.Time // starts_at <= DateEnd
 	Limit          int
 	Offset         int
 }
 
-// Даты без пояса считаются в loc (часовой пояс сервера).
+// ParseListFilter читает фильтры из query. Даты без пояса считаются в loc (пояс сервера).
 func ParseListFilter(q url.Values, loc *time.Location) (ListFilter, error) {
 	page, err := httpx.ParsePage(q)
 	if err != nil {
@@ -48,11 +52,20 @@ func ParseListFilter(q url.Values, loc *time.Location) (ListFilter, error) {
 		f.FullTextFields = append(f.FullTextFields, field)
 	}
 
-	for _, s := range splitList(q["id"]) {
-		if !httpx.IsUUID(s) {
-			return f, fmt.Errorf("id: неверное значение %q", s)
+	if f.IDs, err = parseUUIDs("id", q); err != nil {
+		return f, err
+	}
+	if f.EmployeeIDs, err = parseUUIDs("employeeId", q); err != nil {
+		return f, err
+	}
+	if f.ClientIDs, err = parseUUIDs("clientId", q); err != nil {
+		return f, err
+	}
+	for _, s := range splitList(q["status"]) {
+		if !slices.Contains(statuses, s) {
+			return f, fmt.Errorf("status: неизвестный статус %q (можно: %s)", s, strings.Join(statuses, ", "))
 		}
-		f.IDs = append(f.IDs, strings.ToLower(s))
+		f.Statuses = append(f.Statuses, s)
 	}
 
 	if f.DateStart, err = parseDate(q.Get("dateStart"), false, loc); err != nil {
@@ -64,8 +77,18 @@ func ParseListFilter(q url.Values, loc *time.Location) (ListFilter, error) {
 	if f.DateStart != nil && f.DateEnd != nil && f.DateStart.After(*f.DateEnd) {
 		return f, fmt.Errorf("dateStart позже dateEnd")
 	}
-
 	return f, nil
+}
+
+func parseUUIDs(param string, q url.Values) ([]string, error) {
+	var ids []string
+	for _, s := range splitList(q[param]) {
+		if !httpx.IsUUID(s) {
+			return nil, fmt.Errorf("%s: неверное значение %q", param, s)
+		}
+		ids = append(ids, strings.ToLower(s))
+	}
+	return ids, nil
 }
 
 // splitList собирает значения и из повторов (?id=1&id=2), и через запятую (?id=1,2).
@@ -81,18 +104,26 @@ func splitList(values []string) []string {
 	return out
 }
 
-// parseDate принимает 2026-09-27, 2026-09-27T10:00:00 (в поясе loc) или RFC 3339 с поясом.
-// Для endOfDay дата без времени означает конец дня: 2026-09-27T23:59:59.999999999.
+// parseTime принимает RFC 3339 с поясом (2026-09-27T10:00:00+03:00)
+// или время без пояса (2026-09-27T10:00:00) — тогда оно в поясе loc.
+func parseTime(s string, loc *time.Location) (time.Time, bool) {
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		return t.In(loc), true
+	}
+	if t, err := time.ParseInLocation(localLayout, s, loc); err == nil {
+		return t, true
+	}
+	return time.Time{}, false
+}
+
+// parseDate — как parseTime, но принимает и дату без времени (2026-09-27).
+// Для endOfDay такая дата означает конец дня: 2026-09-27T23:59:59.999999999.
 func parseDate(s string, endOfDay bool, loc *time.Location) (*time.Time, error) {
 	s = strings.TrimSpace(s)
 	if s == "" {
 		return nil, nil
 	}
-	if t, err := time.Parse(time.RFC3339, s); err == nil {
-		t = t.In(loc)
-		return &t, nil
-	}
-	if t, err := time.ParseInLocation(dateLayout, s, loc); err == nil {
+	if t, ok := parseTime(s, loc); ok {
 		return &t, nil
 	}
 	if t, err := time.ParseInLocation(time.DateOnly, s, loc); err == nil {
@@ -101,7 +132,7 @@ func parseDate(s string, endOfDay bool, loc *time.Location) (*time.Time, error) 
 		}
 		return &t, nil
 	}
-	return nil, fmt.Errorf("неверная дата %q (формат 2026-09-27 или 2026-09-27T10:00:00)", s)
+	return nil, fmt.Errorf("неверная дата %q (формат 2026-09-27, 2026-09-27T10:00:00 или 2026-09-27T10:00:00+03:00)", s)
 }
 
 // Ответ списка — в формате примера: success, filters (что применилось), count, data.
@@ -115,10 +146,13 @@ type ListResponse struct {
 }
 
 type ListFiltersOut struct {
-	FullText  FullTextFilter        `json:"fullText"`
-	ID        FilterValue[[]string] `json:"id"`
-	DateStart FilterValue[*string]  `json:"dateStart"`
-	DateEnd   FilterValue[*string]  `json:"dateEnd"`
+	FullText   FullTextFilter        `json:"fullText"`
+	ID         FilterValue[[]string] `json:"id"`
+	EmployeeID FilterValue[[]string] `json:"employeeId"`
+	ClientID   FilterValue[[]string] `json:"clientId"`
+	Status     FilterValue[[]string] `json:"status"`
+	DateStart  FilterValue[*string]  `json:"dateStart"`
+	DateEnd    FilterValue[*string]  `json:"dateEnd"`
 }
 
 type FilterValue[T any] struct {
@@ -134,10 +168,13 @@ func newListResponse(f ListFilter, records []Record, total int, loc *time.Locati
 	return ListResponse{
 		Success: true,
 		Filters: ListFiltersOut{
-			FullText:  FullTextFilter{Value: f.FullText, Fields: f.FullTextFields},
-			ID:        FilterValue[[]string]{Value: f.IDs},
-			DateStart: FilterValue[*string]{Value: formatDate(f.DateStart, loc)},
-			DateEnd:   FilterValue[*string]{Value: formatDate(f.DateEnd, loc)},
+			FullText:   FullTextFilter{Value: f.FullText, Fields: f.FullTextFields},
+			ID:         FilterValue[[]string]{Value: f.IDs},
+			EmployeeID: FilterValue[[]string]{Value: f.EmployeeIDs},
+			ClientID:   FilterValue[[]string]{Value: f.ClientIDs},
+			Status:     FilterValue[[]string]{Value: f.Statuses},
+			DateStart:  FilterValue[*string]{Value: formatDate(f.DateStart, loc)},
+			DateEnd:    FilterValue[*string]{Value: formatDate(f.DateEnd, loc)},
 		},
 		Count:      total,
 		Pagination: httpx.Page{Limit: f.Limit, Offset: f.Offset},
@@ -145,10 +182,12 @@ func newListResponse(f ListFilter, records []Record, total int, loc *time.Locati
 	}
 }
 
+// formatDate показывает применённую дату в RFC 3339 с поясом — как и все даты в ответах API,
+// чтобы клиенту не нужно было знать, в каком поясе работает сервер.
 func formatDate(t *time.Time, loc *time.Location) *string {
 	if t == nil {
 		return nil
 	}
-	s := t.In(loc).Format(dateLayout)
+	s := t.In(loc).Format(time.RFC3339)
 	return &s
 }

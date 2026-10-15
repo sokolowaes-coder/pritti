@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"sync"
 	"testing"
 	"time"
 
@@ -23,10 +24,27 @@ func newRefs(t *testing.T, s *Storage) (clientID, employeeID string) {
 	if err := s.db.QueryRow(ctx, `INSERT INTO clients (full_name, phone) VALUES ('клиент', '+79161234567') RETURNING id`).Scan(&clientID); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.db.QueryRow(ctx, `INSERT INTO employees (name) VALUES ('сотрудник') RETURNING id`).Scan(&employeeID); err != nil {
+	return clientID, newEmployee(t, s, "сотрудник")
+}
+
+func newEmployee(t *testing.T, s *Storage, name string) string {
+	t.Helper()
+	var id string
+	if err := s.db.QueryRow(context.Background(), `INSERT INTO employees (name) VALUES ($1) RETURNING id`, name).Scan(&id); err != nil {
 		t.Fatal(err)
 	}
-	return clientID, employeeID
+	return id
+}
+
+// at — время 16.10.2026 в UTC: at(10, 30) — 10:30.
+func at(hour, minute int) time.Time {
+	return time.Date(2026, 10, 16, hour, minute, 0, 0, time.UTC)
+}
+
+// visit — запись с часу from до часу to 16.10.2026.
+func visit(name, clientID, employeeID string, from, to int) RecordInput {
+	return RecordInput{Name: name, ClientID: clientID, EmployeeID: employeeID,
+		StartsAt: at(from, 0), EndsAt: at(to, 0), Status: StatusScheduled}
 }
 
 // missingID — валидный UUID, которого нет в базе.
@@ -42,12 +60,15 @@ func TestStorageCRUD(t *testing.T) {
 	}
 
 	clientID, employeeID := newRefs(t, s)
-	created, err := s.Create(ctx, RecordInput{Name: "первая", Description: "описание", ClientID: clientID, EmployeeID: employeeID})
+	in := visit("первая", clientID, employeeID, 10, 11)
+	in.Description = "описание"
+	created, err := s.Create(ctx, in)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if created.ID == "" || created.Name != "первая" || created.Description != "описание" || created.CreatedAt.IsZero() ||
-		created.ClientID != clientID || created.EmployeeID != employeeID {
+		created.ClientID != clientID || created.EmployeeID != employeeID || created.Status != StatusScheduled ||
+		!created.StartsAt.Equal(at(10, 0)) || !created.EndsAt.Equal(at(11, 0)) {
 		t.Errorf("Create вернул %+v", created)
 	}
 
@@ -56,8 +77,11 @@ func TestStorageCRUD(t *testing.T) {
 		t.Errorf("GetByID: %+v, %v", got, err)
 	}
 
-	updated, err := s.Update(ctx, created.ID, RecordInput{Name: "изменённая", ClientID: clientID, EmployeeID: employeeID})
-	if err != nil || updated.Name != "изменённая" || updated.Description != "" || updated.ID != created.ID {
+	in = visit("изменённая", clientID, employeeID, 12, 13)
+	in.Status = StatusCompleted
+	updated, err := s.Update(ctx, created.ID, in)
+	if err != nil || updated.Name != "изменённая" || updated.Description != "" || updated.ID != created.ID ||
+		updated.Status != StatusCompleted || !updated.StartsAt.Equal(at(12, 0)) {
 		t.Errorf("Update: %+v, %v", updated, err)
 	}
 
@@ -78,7 +102,7 @@ func TestStorageNotFound(t *testing.T) {
 		t.Errorf("GetByID: %v, ожидали ErrNotFound", err)
 	}
 	clientID, employeeID := newRefs(t, s)
-	if _, err := s.Update(ctx, missingID, RecordInput{Name: "x", ClientID: clientID, EmployeeID: employeeID}); !errors.Is(err, ErrNotFound) {
+	if _, err := s.Update(ctx, missingID, visit("x", clientID, employeeID, 10, 11)); !errors.Is(err, ErrNotFound) {
 		t.Errorf("Update: %v, ожидали ErrNotFound", err)
 	}
 	if err := s.Delete(ctx, missingID); !errors.Is(err, ErrNotFound) {
@@ -86,12 +110,21 @@ func TestStorageNotFound(t *testing.T) {
 	}
 }
 
-func TestStorageRejectsBlankName(t *testing.T) {
+// Проверки, которые держит сама БД, даже если Go-код их пропустит.
+func TestStorageRejectsInvalidData(t *testing.T) {
 	s := newTestStorage(t)
 	ctx := context.Background()
 	clientID, employeeID := newRefs(t, s)
-	if _, err := s.Create(ctx, RecordInput{Name: "   ", ClientID: clientID, EmployeeID: employeeID}); err == nil {
-		t.Error("БД приняла пустое имя, ожидали ошибку CHECK")
+
+	blank := visit("   ", clientID, employeeID, 10, 11)
+	backwards := visit("x", clientID, employeeID, 11, 10)
+	badStatus := visit("x", clientID, employeeID, 10, 11)
+	badStatus.Status = "done"
+
+	for name, in := range map[string]RecordInput{"пустое имя": blank, "конец раньше начала": backwards, "неизвестный статус": badStatus} {
+		if _, err := s.Create(ctx, in); err == nil {
+			t.Errorf("%s: БД приняла запись, ожидали ошибку CHECK", name)
+		}
 	}
 }
 
@@ -100,19 +133,103 @@ func TestStorageUnknownClientOrEmployee(t *testing.T) {
 	ctx := context.Background()
 	clientID, employeeID := newRefs(t, s)
 
-	if _, err := s.Create(ctx, RecordInput{Name: "x", ClientID: missingID, EmployeeID: employeeID}); !errors.Is(err, ErrClientNotFound) {
+	if _, err := s.Create(ctx, visit("x", missingID, employeeID, 10, 11)); !errors.Is(err, ErrClientNotFound) {
 		t.Errorf("Create: %v, ожидали ErrClientNotFound", err)
 	}
-	if _, err := s.Create(ctx, RecordInput{Name: "x", ClientID: clientID, EmployeeID: missingID}); !errors.Is(err, ErrEmployeeNotFound) {
+	if _, err := s.Create(ctx, visit("x", clientID, missingID, 10, 11)); !errors.Is(err, ErrEmployeeNotFound) {
 		t.Errorf("Create: %v, ожидали ErrEmployeeNotFound", err)
 	}
 
-	rec, err := s.Create(ctx, RecordInput{Name: "x", ClientID: clientID, EmployeeID: employeeID})
+	rec, err := s.Create(ctx, visit("x", clientID, employeeID, 10, 11))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Update(ctx, rec.ID, RecordInput{Name: "x", ClientID: missingID, EmployeeID: employeeID}); !errors.Is(err, ErrClientNotFound) {
+	if _, err := s.Update(ctx, rec.ID, visit("x", missingID, employeeID, 10, 11)); !errors.Is(err, ErrClientNotFound) {
 		t.Errorf("Update: %v, ожидали ErrClientNotFound", err)
+	}
+}
+
+func TestStorageEmployeeOverlap(t *testing.T) {
+	s := newTestStorage(t)
+	ctx := context.Background()
+	clientID, employeeID := newRefs(t, s)
+	otherEmployee := newEmployee(t, s, "другой мастер")
+
+	first, err := s.Create(ctx, visit("10–12", clientID, employeeID, 10, 12))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cancelled := visit("отменённая 11–13", clientID, employeeID, 11, 13)
+	cancelled.Status = StatusCancelled
+
+	tests := []struct {
+		name    string
+		in      RecordInput
+		wantErr error
+	}{
+		{"пересечение с концом", visit("11–13", clientID, employeeID, 11, 13), ErrEmployeeBusy},
+		{"внутри чужой записи", RecordInput{Name: "10:30–11:00", ClientID: clientID, EmployeeID: employeeID,
+			StartsAt: at(10, 30), EndsAt: at(11, 0), Status: StatusScheduled}, ErrEmployeeBusy},
+		{"накрывает чужую запись", visit("9–13", clientID, employeeID, 9, 13), ErrEmployeeBusy},
+		{"впритык после: [10, 12) и [12, 13) не пересекаются", visit("12–13", clientID, employeeID, 12, 13), nil},
+		{"впритык до", visit("9–10", clientID, employeeID, 9, 10), nil},
+		{"то же время у другого мастера", visit("10–12", clientID, otherEmployee, 10, 12), nil},
+		{"отменённая не мешает", cancelled, nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := s.Create(ctx, tt.in); !errors.Is(err, tt.wantErr) {
+				t.Errorf("Create: %v, ожидали %v", err, tt.wantErr)
+			}
+		})
+	}
+
+	// Перенос своей записи на пересекающееся с ней же время — не конфликт.
+	if _, err := s.Update(ctx, first.ID, visit("10–11", clientID, employeeID, 10, 11)); err != nil {
+		t.Errorf("Update своей записи: %v", err)
+	}
+	// Первую сократили до 10–11 — время 11–12 освободилось.
+	if _, err := s.Create(ctx, RecordInput{Name: "11–12", ClientID: clientID, EmployeeID: employeeID,
+		StartsAt: at(11, 0), EndsAt: at(12, 0), Status: StatusScheduled}); err != nil {
+		t.Errorf("Create на освободившееся время: %v", err)
+	}
+}
+
+// Главное преимущество ограничения в БД: из параллельных запросов на одно время
+// проходит ровно один. Проверка «время свободно?» в Go пропустила бы несколько.
+func TestStorageEmployeeOverlapConcurrent(t *testing.T) {
+	s := newTestStorage(t)
+	ctx := context.Background()
+	clientID, employeeID := newRefs(t, s)
+
+	const n = 10
+	var wg sync.WaitGroup
+	errs := make(chan error, n)
+	for i := range n {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := s.Create(ctx, visit(fmt.Sprintf("попытка %d", i), clientID, employeeID, 10, 11))
+			errs <- err
+		}()
+	}
+	wg.Wait()
+	close(errs)
+
+	var ok, busy int
+	for err := range errs {
+		switch {
+		case err == nil:
+			ok++
+		case errors.Is(err, ErrEmployeeBusy):
+			busy++
+		default:
+			t.Errorf("неожиданная ошибка: %v", err)
+		}
+	}
+	if ok != 1 || busy != n-1 {
+		t.Errorf("создано %d, отказано %d; ожидали 1 и %d", ok, busy, n-1)
 	}
 }
 
@@ -120,32 +237,43 @@ func TestStorageListFilters(t *testing.T) {
 	s := newTestStorage(t)
 	ctx := context.Background()
 	clientID, employeeID := newRefs(t, s)
+	otherEmployee := newEmployee(t, s, "другой мастер")
+	var otherClient string
+	if err := s.db.QueryRow(ctx, `INSERT INTO clients (full_name, phone) VALUES ('другой клиент', '+79990001122') RETURNING id`).Scan(&otherClient); err != nil {
+		t.Fatal(err)
+	}
 
+	// Записи создаются не по порядку времени: список должен сортироваться по starts_at.
+	// Время начала у всех разное: при равном starts_at порядок решает id, а UUID v7,
+	// созданные в одну миллисекунду, различаются случайными битами — порядок был бы случайным.
 	ids := map[string]string{} // имя → id
 	for _, in := range []RecordInput{
-		{Name: "Лазерная депиляция", Description: "кабинет 1"},
-		{Name: "Чистка лица", Description: "после лазерной процедуры"},
-		{Name: "Массаж", Description: "скидка 50%"},
-		{Name: "Массаж_спины"},
-		{Name: "Пилинг"},
+		visit("Чистка лица", clientID, employeeID, 11, 12),
+		visit("Лазерная депиляция", clientID, employeeID, 10, 11),
+		{Name: "Массаж", ClientID: otherClient, EmployeeID: otherEmployee, StartsAt: at(10, 30), EndsAt: at(11, 30), Status: StatusScheduled},
+		visit("Массаж_спины", clientID, employeeID, 12, 13),
+		{Name: "Пилинг", ClientID: clientID, EmployeeID: employeeID,
+			StartsAt: time.Date(2020, 1, 15, 12, 0, 0, 0, time.UTC), EndsAt: time.Date(2020, 1, 15, 13, 0, 0, 0, time.UTC), Status: StatusCompleted},
 	} {
-		in.ClientID, in.EmployeeID = clientID, employeeID
+		switch in.Name {
+		case "Лазерная депиляция":
+			in.Description = "кабинет 1"
+		case "Чистка лица":
+			in.Description = "после лазерной процедуры"
+		case "Массаж":
+			in.Description = "скидка 50%"
+		}
 		rec, err := s.Create(ctx, in)
 		if err != nil {
 			t.Fatal(err)
 		}
 		ids[rec.Name] = rec.ID
 	}
-	// created_at у всех «сейчас»; одну запись сдвигаем в прошлое для фильтра по дате.
-	// Список сортируется по created_at, поэтому «Пилинг» дальше везде первая.
-	if _, err := s.db.Exec(ctx, `UPDATE records SET created_at = '2020-01-15T12:00:00Z' WHERE name = 'Пилинг'`); err != nil {
-		t.Fatal(err)
-	}
 
 	str := func(v string) *string { return &v }
-	at := func(v string) *time.Time {
-		tm, _ := time.Parse(time.RFC3339, v)
-		return &tm
+	tm := func(v string) *time.Time {
+		parsed, _ := time.Parse(time.RFC3339, v)
+		return &parsed
 	}
 
 	tests := []struct {
@@ -154,16 +282,19 @@ func TestStorageListFilters(t *testing.T) {
 		wantNames []string
 		wantTotal int
 	}{
-		{"без фильтров, от старых к новым", ListFilter{}, []string{"Пилинг", "Лазерная депиляция", "Чистка лица", "Массаж", "Массаж_спины"}, 5},
+		{"без фильтров, по времени визита", ListFilter{}, []string{"Пилинг", "Лазерная депиляция", "Массаж", "Чистка лица", "Массаж_спины"}, 5},
 		{"поиск без учёта регистра по name и description", ListFilter{FullText: str("ЛАЗЕР")}, []string{"Лазерная депиляция", "Чистка лица"}, 2},
 		{"поиск только по name", ListFilter{FullText: str("лазер"), FullTextFields: []string{"name"}}, []string{"Лазерная депиляция"}, 1},
 		{"% ищется как символ", ListFilter{FullText: str("50%")}, []string{"Массаж"}, 1},
 		{"_ ищется как символ", ListFilter{FullText: str("_")}, []string{"Массаж_спины"}, 1},
 		{"по списку id", ListFilter{IDs: []string{ids["Чистка лица"], ids["Массаж_спины"], missingID}}, []string{"Чистка лица", "Массаж_спины"}, 2},
-		{"dateEnd в прошлом", ListFilter{DateEnd: at("2020-12-31T00:00:00Z")}, []string{"Пилинг"}, 1},
-		{"dateStart отсекает старую", ListFilter{DateStart: at("2021-01-01T00:00:00Z")}, []string{"Лазерная депиляция", "Чистка лица", "Массаж", "Массаж_спины"}, 4},
-		{"фильтры вместе (AND)", ListFilter{FullText: str("массаж"), IDs: []string{ids["Массаж"], ids["Пилинг"]}}, []string{"Массаж"}, 1},
-		{"пагинация: count — всего, data — страница", ListFilter{Limit: 2, Offset: 1}, []string{"Лазерная депиляция", "Чистка лица"}, 5},
+		{"по мастеру", ListFilter{EmployeeIDs: []string{otherEmployee}}, []string{"Массаж"}, 1},
+		{"по клиенту", ListFilter{ClientIDs: []string{otherClient}}, []string{"Массаж"}, 1},
+		{"по статусу", ListFilter{Statuses: []string{StatusCompleted}}, []string{"Пилинг"}, 1},
+		{"dateEnd в прошлом", ListFilter{DateEnd: tm("2020-12-31T00:00:00Z")}, []string{"Пилинг"}, 1},
+		{"окно по времени визита", ListFilter{DateStart: tm("2026-10-16T10:45:00Z"), DateEnd: tm("2026-10-16T12:00:00Z")}, []string{"Чистка лица", "Массаж_спины"}, 2},
+		{"фильтры вместе (AND)", ListFilter{FullText: str("массаж"), EmployeeIDs: []string{employeeID}}, []string{"Массаж_спины"}, 1},
+		{"пагинация: count — всего, data — страница", ListFilter{Limit: 2, Offset: 1}, []string{"Лазерная депиляция", "Массаж"}, 5},
 		{"offset за концом", ListFilter{Limit: 2, Offset: 10}, []string{}, 5},
 		{"offset за концом с фильтром", ListFilter{FullText: str("лазер"), Limit: 2, Offset: 10}, []string{}, 2},
 	}

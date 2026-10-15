@@ -82,7 +82,7 @@ func TestStorageDeleteWithRecords(t *testing.T) {
 	}
 	if _, err := db.Exec(ctx, `
 		WITH c AS (INSERT INTO clients (full_name, phone) VALUES ('Иванова Анна', '+79161234567') RETURNING id)
-		INSERT INTO records (name, client_id, employee_id) SELECT 'запись', id, $1 FROM c`, e.ID); err != nil {
+		INSERT INTO records (name, client_id, employee_id, starts_at, ends_at) SELECT 'запись', id, $1, now(), now() + interval '1 hour' FROM c`, e.ID); err != nil {
 		t.Fatal(err)
 	}
 

@@ -68,6 +68,19 @@ func TestParseListFilter(t *testing.T) {
 			query: "dateStart=2026-09-27T10:00:00%2B03:00",
 			want:  ListFilter{DateStart: day("2026-09-27T07:00:00Z"), Limit: 20},
 		},
+		{
+			name:  "мастер, клиент и статусы",
+			query: "employeeId=00000000-0000-0000-0000-000000000001&clientId=00000000-0000-0000-0000-000000000002,00000000-0000-0000-0000-000000000003&status=scheduled,no_show",
+			want: ListFilter{
+				EmployeeIDs: []string{"00000000-0000-0000-0000-000000000001"},
+				ClientIDs:   []string{"00000000-0000-0000-0000-000000000002", "00000000-0000-0000-0000-000000000003"},
+				Statuses:    []string{"scheduled", "no_show"},
+				Limit:       20,
+			},
+		},
+		{name: "employeeId не UUID", query: "employeeId=1", wantErr: "employeeId"},
+		{name: "clientId не UUID", query: "clientId=abc", wantErr: "clientId"},
+		{name: "неизвестный статус", query: "status=done", wantErr: "status"},
 		{name: "кривая дата", query: "dateStart=27.09.2026", wantErr: "dateStart"},
 		{name: "начало позже конца", query: "dateStart=2026-09-28&dateEnd=2026-09-27", wantErr: "позже"},
 		{name: "limit и offset", query: "limit=5&offset=10", want: ListFilter{Limit: 5, Offset: 10}},
@@ -116,8 +129,8 @@ func dump(f ListFilter) string {
 		}
 		return p.Format(time.RFC3339Nano)
 	}
-	return fmt.Sprintf("fullText=%s fields=%v ids=%v start=%s end=%s limit=%d offset=%d",
-		s, f.FullTextFields, f.IDs, tm(f.DateStart), tm(f.DateEnd), f.Limit, f.Offset)
+	return fmt.Sprintf("fullText=%s fields=%v ids=%v employees=%v clients=%v statuses=%v start=%s end=%s limit=%d offset=%d",
+		s, f.FullTextFields, f.IDs, f.EmployeeIDs, f.ClientIDs, f.Statuses, tm(f.DateStart), tm(f.DateEnd), f.Limit, f.Offset)
 }
 
 func TestParseListFilterLocalTimezone(t *testing.T) {
@@ -137,8 +150,8 @@ func TestParseListFilterLocalTimezone(t *testing.T) {
 	if got := f.DateEnd.UTC().Format(time.RFC3339); got != "2026-09-27T20:59:59Z" {
 		t.Errorf("dateEnd в UTC = %s", got)
 	}
-	// В ответе дата показывается так же, как её прислали, — в местном времени.
-	if got := *formatDate(f.DateStart, msk); got != "2026-09-27T00:00:00" {
+	// В ответе дата — в местном времени и с поясом, чтобы её нельзя было понять двояко.
+	if got := *formatDate(f.DateStart, msk); got != "2026-09-27T00:00:00+03:00" {
 		t.Errorf("dateStart в ответе = %s", got)
 	}
 }

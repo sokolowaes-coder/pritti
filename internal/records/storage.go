@@ -16,9 +16,10 @@ var (
 	ErrNotFound         = errors.New("record not found")
 	ErrClientNotFound   = errors.New("record client not found")
 	ErrEmployeeNotFound = errors.New("record employee not found")
+	ErrEmployeeBusy     = errors.New("employee has another record at this time")
 )
 
-const recordColumns = `id, name, description, client_id, employee_id, created_at`
+const recordColumns = `id, name, description, client_id, employee_id, starts_at, ends_at, status, created_at`
 
 type Storage struct {
 	db *pgxpool.Pool
@@ -38,7 +39,7 @@ func (s *Storage) List(ctx context.Context, f ListFilter) ([]Record, int, error)
 	args = append(args, f.Limit, f.Offset)
 	rows, err := s.db.Query(ctx,
 		`SELECT `+recordColumns+`, count(*) OVER() FROM records`+where+
-			fmt.Sprintf(` ORDER BY created_at, id LIMIT $%d OFFSET $%d`, len(args)-1, len(args)),
+			fmt.Sprintf(` ORDER BY starts_at, id LIMIT $%d OFFSET $%d`, len(args)-1, len(args)),
 		args...,
 	)
 	if err != nil {
@@ -46,9 +47,7 @@ func (s *Storage) List(ctx context.Context, f ListFilter) ([]Record, int, error)
 	}
 	var total int
 	records, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (Record, error) {
-		var rec Record
-		err := row.Scan(&rec.ID, &rec.Name, &rec.Description, &rec.ClientID, &rec.EmployeeID, &rec.CreatedAt, &total)
-		return rec, err
+		return scanRecord(row, &total)
 	})
 	if err != nil {
 		return nil, 0, err
@@ -90,11 +89,20 @@ func buildWhere(f ListFilter) (string, []any) {
 	if len(f.IDs) > 0 {
 		conds = append(conds, "id = ANY("+arg(f.IDs)+"::uuid[])")
 	}
+	if len(f.EmployeeIDs) > 0 {
+		conds = append(conds, "employee_id = ANY("+arg(f.EmployeeIDs)+"::uuid[])")
+	}
+	if len(f.ClientIDs) > 0 {
+		conds = append(conds, "client_id = ANY("+arg(f.ClientIDs)+"::uuid[])")
+	}
+	if len(f.Statuses) > 0 {
+		conds = append(conds, "status = ANY("+arg(f.Statuses)+"::text[])")
+	}
 	if f.DateStart != nil {
-		conds = append(conds, "created_at >= "+arg(*f.DateStart))
+		conds = append(conds, "starts_at >= "+arg(*f.DateStart))
 	}
 	if f.DateEnd != nil {
-		conds = append(conds, "created_at <= "+arg(*f.DateEnd))
+		conds = append(conds, "starts_at <= "+arg(*f.DateEnd))
 	}
 
 	if len(conds) == 0 {
@@ -108,9 +116,12 @@ func escapeLike(s string) string {
 	return strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(s)
 }
 
-func scanRecord(row pgx.Row) (Record, error) {
+// scanRecord читает колонки recordColumns и, если передан extra, — ещё одну колонку после них.
+func scanRecord(row pgx.Row, extra ...any) (Record, error) {
 	var rec Record
-	err := row.Scan(&rec.ID, &rec.Name, &rec.Description, &rec.ClientID, &rec.EmployeeID, &rec.CreatedAt)
+	dest := append([]any{&rec.ID, &rec.Name, &rec.Description, &rec.ClientID, &rec.EmployeeID,
+		&rec.StartsAt, &rec.EndsAt, &rec.Status, &rec.CreatedAt}, extra...)
+	err := row.Scan(dest...)
 	return rec, err
 }
 
@@ -127,36 +138,42 @@ func (s *Storage) GetByID(ctx context.Context, id string) (Record, error) {
 
 func (s *Storage) Create(ctx context.Context, in RecordInput) (Record, error) {
 	rec, err := scanRecord(s.db.QueryRow(ctx,
-		`INSERT INTO records (name, description, client_id, employee_id) VALUES ($1, $2, $3, $4)
+		`INSERT INTO records (name, description, client_id, employee_id, starts_at, ends_at, status)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7)
 		 RETURNING `+recordColumns,
-		in.Name, in.Description, in.ClientID, in.EmployeeID,
+		in.Name, in.Description, in.ClientID, in.EmployeeID, in.StartsAt, in.EndsAt, in.Status,
 	))
-	return rec, foreignKeyError(err)
+	return rec, constraintError(err)
 }
 
 func (s *Storage) Update(ctx context.Context, id string, in RecordInput) (Record, error) {
 	rec, err := scanRecord(s.db.QueryRow(ctx,
-		`UPDATE records SET name = $2, description = $3, client_id = $4, employee_id = $5 WHERE id = $1
+		`UPDATE records SET name = $2, description = $3, client_id = $4, employee_id = $5,
+		                    starts_at = $6, ends_at = $7, status = $8
+		 WHERE id = $1
 		 RETURNING `+recordColumns,
-		id, in.Name, in.Description, in.ClientID, in.EmployeeID,
+		id, in.Name, in.Description, in.ClientID, in.EmployeeID, in.StartsAt, in.EndsAt, in.Status,
 	))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Record{}, ErrNotFound
 	}
-	return rec, foreignKeyError(err)
+	return rec, constraintError(err)
 }
 
-// foreignKeyError превращает нарушение внешнего ключа (код 23503)
-// в понятную ошибку: какого именно клиента или сотрудника нет.
-func foreignKeyError(err error) error {
+// constraintError превращает нарушения ограничений БД в понятные ошибки:
+// 23503 — нет такого клиента или сотрудника, 23P01 — у мастера уже есть запись на это время.
+func constraintError(err error) error {
 	var pgErr *pgconn.PgError
-	if errors.As(err, &pgErr) && pgErr.Code == "23503" {
-		switch pgErr.ConstraintName {
-		case "records_client_id_fkey":
-			return ErrClientNotFound
-		case "records_employee_id_fkey":
-			return ErrEmployeeNotFound
-		}
+	if !errors.As(err, &pgErr) {
+		return err
+	}
+	switch {
+	case pgErr.Code == "23503" && pgErr.ConstraintName == "records_client_id_fkey":
+		return ErrClientNotFound
+	case pgErr.Code == "23503" && pgErr.ConstraintName == "records_employee_id_fkey":
+		return ErrEmployeeNotFound
+	case pgErr.Code == "23P01" && pgErr.ConstraintName == "records_employee_no_overlap":
+		return ErrEmployeeBusy
 	}
 	return err
 }

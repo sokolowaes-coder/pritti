@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"pritti/internal/httpx"
 )
 
 func newTestLogger(buf *bytes.Buffer) *slog.Logger {
@@ -55,11 +57,11 @@ func TestLoggingWritesRequest(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var buf bytes.Buffer
-			h := Logging(newTestLogger(&buf))(tt.handler)
+			h := Chain(tt.handler, RequestID(newTestLogger(&buf)), Logging())
 			h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("POST", tt.path, nil))
 
 			log := buf.String()
-			for _, want := range []string{tt.wantLevel, tt.wantInLog, "method=POST", "duration="} {
+			for _, want := range []string{tt.wantLevel, tt.wantInLog, "method=POST", "duration=", "request_id="} {
 				if !strings.Contains(log, want) {
 					t.Errorf("в логе нет %q:\n%s", want, log)
 				}
@@ -70,9 +72,9 @@ func TestLoggingWritesRequest(t *testing.T) {
 
 func TestRecoverReturns500(t *testing.T) {
 	var buf bytes.Buffer
-	h := Recover(newTestLogger(&buf))(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	h := Chain(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		panic("что-то сломалось")
-	}))
+	}), RequestID(newTestLogger(&buf)), Recover())
 
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest("GET", "/records", nil))
@@ -80,7 +82,7 @@ func TestRecoverReturns500(t *testing.T) {
 	if rec.Code != http.StatusInternalServerError {
 		t.Errorf("статус = %d, ожидали 500", rec.Code)
 	}
-	if got := strings.TrimSpace(rec.Body.String()); got != `{"error":"внутренняя ошибка","success":false}` {
+	if got := strings.TrimSpace(rec.Body.String()); got != `{"success":false,"code":"internal_error","error":"внутренняя ошибка"}` {
 		t.Errorf("тело = %s, ожидали JSON-ошибку", got)
 	}
 	if strings.Contains(rec.Body.String(), "что-то сломалось") {
@@ -118,7 +120,7 @@ func TestLoggingSeesRecoveredPanic(t *testing.T) {
 	logger := newTestLogger(&buf)
 	h := Chain(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		panic("бум")
-	}), Logging(logger), Recover(logger))
+	}), RequestID(logger), Logging(), Recover())
 
 	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/records", nil))
 
@@ -153,7 +155,7 @@ func TestAPIKey(t *testing.T) {
 			if rec.Code != tt.wantStatus {
 				t.Errorf("статус = %d, ожидали %d", rec.Code, tt.wantStatus)
 			}
-			if rec.Code == 401 && !strings.Contains(rec.Body.String(), `"success":false`) {
+			if rec.Code == 401 && !strings.Contains(rec.Body.String(), `"code":"unauthorized"`) {
 				t.Errorf("тело 401 не в формате ошибки: %s", rec.Body)
 			}
 		})
@@ -169,5 +171,117 @@ func TestTimeoutSetsDeadline(t *testing.T) {
 	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/", nil))
 	if !hasDeadline || time.Until(deadline) > time.Second {
 		t.Errorf("deadline = %v, есть = %v", deadline, hasDeadline)
+	}
+}
+
+func TestRequestID(t *testing.T) {
+	var buf bytes.Buffer
+	var seen string
+	h := Chain(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		httpx.Logger(r.Context()).Info("из хендлера")
+		seen = w.Header().Get(RequestIDHeader)
+	}), RequestID(newTestLogger(&buf)))
+
+	tests := []struct {
+		name, incoming string
+		keep           bool
+	}{
+		{"нет заголовка — свой id", "", false},
+		{"id от прокси сохраняется", "nginx-abc_123", true},
+		{"длинный id заменяется", strings.Repeat("a", 65), false},
+		{"опасные символы — заменяется", "abc\nlevel=ERROR", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			buf.Reset()
+			req := httptest.NewRequest("GET", "/", nil)
+			if tt.incoming != "" {
+				req.Header.Set(RequestIDHeader, tt.incoming)
+			}
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+
+			id := rec.Header().Get(RequestIDHeader)
+			if id == "" || id != seen {
+				t.Fatalf("id в ответе %q, в хендлере %q", id, seen)
+			}
+			if tt.keep != (id == tt.incoming) {
+				t.Errorf("id = %q, входящий %q, ожидали сохранить: %v", id, tt.incoming, tt.keep)
+			}
+			if !strings.Contains(buf.String(), "request_id="+id) {
+				t.Errorf("лог хендлера без request_id:\n%s", buf.String())
+			}
+		})
+	}
+}
+
+func TestSecurityHeaders(t *testing.T) {
+	rec := httptest.NewRecorder()
+	SecurityHeaders()(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})).
+		ServeHTTP(rec, httptest.NewRequest("GET", "/", nil))
+	for header, want := range map[string]string{
+		"X-Content-Type-Options": "nosniff",
+		"X-Frame-Options":        "DENY",
+		"Referrer-Policy":        "no-referrer",
+	} {
+		if got := rec.Header().Get(header); got != want {
+			t.Errorf("%s = %q, ожидали %q", header, got, want)
+		}
+	}
+}
+
+func TestClientIP(t *testing.T) {
+	req := httptest.NewRequest("GET", "/", nil)
+	req.RemoteAddr = "10.0.0.1:5555"
+	req.Header.Set("X-Real-IP", "203.0.113.7")
+	req.Header.Set("X-Forwarded-For", "198.51.100.1, 10.0.0.1")
+
+	tests := []struct{ header, want string }{
+		{"", "10.0.0.1"}, // без прокси заголовкам не верим
+		{"X-Real-IP", "203.0.113.7"},
+		{"X-Forwarded-For", "198.51.100.1"},
+		{"X-Missing", "10.0.0.1"}, // заголовка нет — адрес соединения
+	}
+	for _, tt := range tests {
+		if got := ClientIP(tt.header)(req); got != tt.want {
+			t.Errorf("ClientIP(%q) = %q, ожидали %q", tt.header, got, tt.want)
+		}
+	}
+}
+
+func TestRateLimit(t *testing.T) {
+	h := RateLimit(1, 2, ClientIP("X-Real-IP"))(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	call := func(ip string) int {
+		req := httptest.NewRequest("GET", "/", nil)
+		req.Header.Set("X-Real-IP", ip)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec.Code
+	}
+
+	// Всплеск 2 — проходят два запроса подряд, третий получает 429.
+	for i, want := range []int{200, 200, 429} {
+		if got := call("1.1.1.1"); got != want {
+			t.Errorf("запрос %d: статус %d, ожидали %d", i+1, got, want)
+		}
+	}
+	// У другого IP свой счётчик.
+	if got := call("2.2.2.2"); got != 200 {
+		t.Errorf("другой IP: статус %d, ожидали 200", got)
+	}
+}
+
+func TestIPLimiterForgetsIdleVisitors(t *testing.T) {
+	l := &ipLimiter{limit: 1, burst: 1, visitors: map[string]*visitor{}}
+	start := time.Now()
+	l.allow("1.1.1.1", start)
+	l.allow("2.2.2.2", start.Add(visitorTTL))
+	// Через visitorTTL+ после первого: 1.1.1.1 давно молчит и забывается, 2.2.2.2 — нет.
+	l.allow("3.3.3.3", start.Add(visitorTTL+2*time.Minute))
+	if _, ok := l.visitors["1.1.1.1"]; ok {
+		t.Error("давно не приходивший IP не забыт")
+	}
+	if _, ok := l.visitors["2.2.2.2"]; !ok {
+		t.Error("недавний IP забыт раньше времени")
 	}
 }

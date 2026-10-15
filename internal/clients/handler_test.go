@@ -245,3 +245,35 @@ func TestCreateNormalizesPhone(t *testing.T) {
 		t.Errorf("после изменения %+v", c)
 	}
 }
+
+func TestValidationReportsAllFields(t *testing.T) {
+	rec := do(t, newFakeStore(), "POST", "/clients", `{"full_name":" ","phone":"123"}`)
+	var got struct {
+		Code   string            `json:"code"`
+		Fields map[string]string `json:"fields"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if rec.Code != http.StatusBadRequest || got.Code != "validation_error" || got.Fields["full_name"] == "" || got.Fields["phone"] == "" {
+		t.Errorf("статус %d, ответ %+v; ожидали ошибки обоих полей сразу", rec.Code, got)
+	}
+}
+
+func TestErrorCodes(t *testing.T) {
+	store := newFakeStore("Анна")
+	store.hasRecords[uid(1)] = true
+	tests := []struct{ method, path, body, wantCode string }{
+		{"GET", "/clients/00000000-0000-0000-0000-000000000999", "", "client_not_found"},
+		{"POST", "/clients", `{"full_name":"x","phone":"+79160000000"}`, "phone_taken"},
+		{"DELETE", "/clients/00000000-0000-0000-0000-000000000001", "", "client_has_records"},
+		{"GET", "/clients/abc", "", "invalid_id"},
+		{"GET", "/clients?limit=0", "", "invalid_query"},
+	}
+	for _, tt := range tests {
+		rec := do(t, store, tt.method, tt.path, tt.body)
+		if !strings.Contains(rec.Body.String(), `"code":"`+tt.wantCode+`"`) {
+			t.Errorf("%s %s: тело %s, ожидали код %s", tt.method, tt.path, rec.Body, tt.wantCode)
+		}
+	}
+}

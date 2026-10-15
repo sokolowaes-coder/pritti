@@ -10,8 +10,11 @@ import (
 
 const maxNameLen = 200
 
-// Тексты ошибок для пользователя API.
+// Коды и тексты ошибок для пользователя API.
 const (
+	codeNotFound   = "employee_not_found"
+	codeHasRecords = "employee_has_records"
+
 	msgNotFound   = "сотрудник не найден"
 	msgHasRecords = "у сотрудника есть записи, сначала удалите или переназначьте их"
 )
@@ -37,12 +40,12 @@ func NewHandler(storage EmployeeStore) *Handler {
 func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	page, err := httpx.ParsePage(r.URL.Query())
 	if err != nil {
-		httpx.WriteError(w, http.StatusBadRequest, err.Error())
+		httpx.WriteError(w, http.StatusBadRequest, httpx.CodeInvalidQuery, err.Error())
 		return
 	}
 	list, total, err := h.storage.List(r.Context(), page.Limit, page.Offset)
 	if err != nil {
-		httpx.InternalError(w, "list employees", err)
+		httpx.InternalError(w, r, "list employees", err)
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, httpx.ListResponse[Employee]{Success: true, Count: total, Pagination: page, Data: list})
@@ -55,11 +58,11 @@ func (h *Handler) GetByID(w http.ResponseWriter, r *http.Request) {
 	}
 	e, err := h.storage.GetByID(r.Context(), id)
 	if errors.Is(err, ErrNotFound) {
-		httpx.WriteError(w, http.StatusNotFound, msgNotFound)
+		httpx.WriteError(w, http.StatusNotFound, codeNotFound, msgNotFound)
 		return
 	}
 	if err != nil {
-		httpx.InternalError(w, "get employee", err)
+		httpx.InternalError(w, r, "get employee", err)
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, e)
@@ -72,7 +75,7 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 	e, err := h.storage.Create(r.Context(), in)
 	if err != nil {
-		httpx.InternalError(w, "create employee", err)
+		httpx.InternalError(w, r, "create employee", err)
 		return
 	}
 	httpx.WriteJSON(w, http.StatusCreated, e)
@@ -89,11 +92,11 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 	e, err := h.storage.Update(r.Context(), id, in)
 	if errors.Is(err, ErrNotFound) {
-		httpx.WriteError(w, http.StatusNotFound, msgNotFound)
+		httpx.WriteError(w, http.StatusNotFound, codeNotFound, msgNotFound)
 		return
 	}
 	if err != nil {
-		httpx.InternalError(w, "update employee", err)
+		httpx.InternalError(w, r, "update employee", err)
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, e)
@@ -107,11 +110,11 @@ func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 	err := h.storage.Delete(r.Context(), id)
 	switch {
 	case errors.Is(err, ErrNotFound):
-		httpx.WriteError(w, http.StatusNotFound, msgNotFound)
+		httpx.WriteError(w, http.StatusNotFound, codeNotFound, msgNotFound)
 	case errors.Is(err, ErrHasRecords):
-		httpx.WriteError(w, http.StatusConflict, msgHasRecords)
+		httpx.WriteError(w, http.StatusConflict, codeHasRecords, msgHasRecords)
 	case err != nil:
-		httpx.InternalError(w, "delete employee", err)
+		httpx.InternalError(w, r, "delete employee", err)
 	default:
 		w.WriteHeader(http.StatusNoContent)
 	}
@@ -130,8 +133,9 @@ func decodeInput(w http.ResponseWriter, r *http.Request) (EmployeeInput, bool) {
 	if !httpx.DecodeJSON(w, r, &in) {
 		return EmployeeInput{}, false
 	}
-	if msg := httpx.CheckText("name", &in.Name, true, maxNameLen); msg != "" {
-		httpx.WriteError(w, http.StatusBadRequest, msg)
+	p := httpx.Problems{}
+	p.Text("name", &in.Name, true, maxNameLen)
+	if p.Write(w) {
 		return EmployeeInput{}, false
 	}
 	return in, true

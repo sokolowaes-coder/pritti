@@ -1,6 +1,10 @@
 package httpx
 
 import (
+	"context"
+	"log/slog"
+	"maps"
+	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
@@ -21,10 +25,10 @@ func TestDecodeJSON(t *testing.T) {
 		{"обычный объект", `{"name":"x"}`, true, 0, ""},
 		{"пробелы после JSON — можно", "{\"name\":\"x\"}\n  ", true, 0, ""},
 		{"сломанный JSON", `{`, false, 400, "неверный JSON"},
-		{"неизвестное поле", `{"nmae":"x"}`, false, 400, `неизвестное поле \"nmae\"`},
+		{"неизвестное поле", `{"nmae":"x"}`, false, 400, `"code":"invalid_json","error":"неизвестное поле \"nmae\"`},
 		{"два объекта подряд", `{"name":"x"}{"name":"y"}`, false, 400, "лишние данные"},
 		{"мусор после JSON", `{"name":"x"} abc`, false, 400, "лишние данные"},
-		{"больше 1 МБ", `{"name":"` + strings.Repeat("a", MaxBodyBytes) + `"}`, false, 413, "больше 1 МБ"},
+		{"больше 1 МБ", `{"name":"` + strings.Repeat("a", MaxBodyBytes) + `"}`, false, 413, `"code":"body_too_large"`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -41,26 +45,68 @@ func TestDecodeJSON(t *testing.T) {
 	}
 }
 
-func TestCheckText(t *testing.T) {
+func TestProblemsText(t *testing.T) {
+	p := Problems{}
 	s := "  Анна  "
-	if msg := CheckText("name", &s, true, 10); msg != "" || s != "Анна" {
-		t.Errorf("msg=%q s=%q", msg, s)
+	p.Text("name", &s, true, 10)
+	if len(p) != 0 || s != "Анна" {
+		t.Errorf("p=%v s=%q", p, s)
 	}
+
 	empty := "   "
-	if msg := CheckText("name", &empty, true, 10); msg != "name обязателен" {
-		t.Errorf("пустое: %q", msg)
-	}
-	if msg := CheckText("description", &empty, false, 10); msg != "" {
-		t.Errorf("необязательное пустое: %q", msg)
-	}
+	p.Text("name", &empty, true, 10)
+	p.Text("description", &empty, false, 10)
 	// длина считается в символах, а не в байтах: 5 кириллических букв = 10 байт
-	long := "Ааааа"
-	if msg := CheckText("name", &long, true, 5); msg != "" {
-		t.Errorf("5 символов при пределе 5: %q", msg)
+	five, six := "Ааааа", "Аааааа"
+	p.Text("five", &five, true, 5)
+	p.Text("six", &six, true, 5)
+	want := Problems{"name": "обязательное поле", "six": "не длиннее 5 символов"}
+	if !maps.Equal(p, want) {
+		t.Errorf("получили %v, ожидали %v", p, want)
 	}
-	long = "Аааааа"
-	if msg := CheckText("name", &long, true, 5); msg != "name: не длиннее 5 символов" {
-		t.Errorf("6 символов при пределе 5: %q", msg)
+}
+
+func TestProblemsUUID(t *testing.T) {
+	p := Problems{}
+	ok, empty, bad := " 01A140DC-0C34-7ABB-8D6C-36E2D1879E0D ", "", "123"
+	p.UUID("ok", &ok)
+	p.UUID("empty", &empty)
+	p.UUID("bad", &bad)
+	if ok != "01a140dc-0c34-7abb-8d6c-36e2d1879e0d" {
+		t.Errorf("UUID не приведён к виду в нижнем регистре: %q", ok)
+	}
+	want := Problems{"empty": "обязательное поле", "bad": "неверный id"}
+	if !maps.Equal(p, want) {
+		t.Errorf("получили %v, ожидали %v", p, want)
+	}
+}
+
+func TestProblemsWrite(t *testing.T) {
+	rec := httptest.NewRecorder()
+	if (Problems{}).Write(rec) {
+		t.Fatal("без ошибок Write должен вернуть false и ничего не писать")
+	}
+
+	p := Problems{}
+	p.Add("phone", "неверный номер")
+	p.Add("full_name", "обязательное поле")
+	p.Add("full_name", "вторая ошибка того же поля не перезаписывает первую")
+	if !p.Write(rec) || rec.Code != http.StatusBadRequest {
+		t.Fatalf("статус = %d", rec.Code)
+	}
+	want := `{"success":false,"code":"validation_error","error":"full_name: обязательное поле; phone: неверный номер","fields":{"full_name":"обязательное поле","phone":"неверный номер"}}`
+	if got := strings.TrimSpace(rec.Body.String()); got != want {
+		t.Errorf("тело:\n%s\nожидали:\n%s", got, want)
+	}
+}
+
+func TestLogger(t *testing.T) {
+	if Logger(context.Background()) != slog.Default() {
+		t.Error("без логгера в контексте ожидали slog.Default()")
+	}
+	l := slog.New(slog.DiscardHandler)
+	if Logger(WithLogger(context.Background(), l)) != l {
+		t.Error("не вернулся логгер из контекста")
 	}
 }
 

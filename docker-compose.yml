@@ -24,7 +24,11 @@ services:
     environment:
       DATABASE_URL: postgres://app:app@db:5432/pritti?sslmode=disable
       APP_TZ: Europe/Moscow
-      API_KEY: ${API_KEY:-}
+      API_KEY: ${API_KEY:?задайте API_KEY в .env — см. README}
+      # Локально миграции применяет сам сервер; на проде — отдельный шаг (server migrate).
+      MIGRATE_ON_START: "true"
+      # IP клиента для лимита запросов: его кладёт nginx (proxy_set_header X-Real-IP).
+      REAL_IP_HEADER: X-Real-IP
     expose:
       - "8080"
     depends_on:

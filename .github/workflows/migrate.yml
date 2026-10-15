@@ -1,0 +1,32 @@
+name: Migrate
+
+# Миграции продовой БД — вручную: Actions → Migrate → Run workflow.
+# Сервер сам их не применяет и не стартует, пока схема БД отстаёт от кода.
+#
+# Нужен секрет репозитория DATABASE_URL_UNPOOLED (Settings → Secrets and variables → Actions) —
+# прямое подключение к Neon, без пулера.
+
+on:
+  workflow_dispatch:
+
+# Две миграции одновременно не запустятся.
+concurrency:
+  group: migrate
+  cancel-in-progress: false
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    # Окружение production: в его настройках можно включить подтверждение перед запуском.
+    environment: production
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: server migrate
+        env:
+          DATABASE_URL_UNPOOLED: ${{ secrets.DATABASE_URL_UNPOOLED }}
+        run: go run ./cmd/server migrate

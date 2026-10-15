@@ -13,6 +13,7 @@ import (
 
 	"pritti/internal/app"
 	"pritti/internal/health"
+	"pritti/migrations"
 )
 
 func main() {
@@ -21,22 +22,48 @@ func main() {
 		port = "8080"
 	}
 
-	// `server healthcheck` — проверка для Docker: в образе нет curl.
-	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
-		if err := health.Check("http://localhost:" + port + "/healthz"); err != nil {
-			os.Stderr.WriteString(err.Error() + "\n")
-			os.Exit(1)
-		}
-		return
-	}
-
 	logger := app.NewLogger()
 	slog.SetDefault(logger)
 
-	if err := run(port, logger); err != nil {
-		logger.Error("сервер завершился с ошибкой", "error", err)
+	command := ""
+	if len(os.Args) > 1 {
+		command = os.Args[1]
+	}
+	var err error
+	switch command {
+	case "":
+		err = run(port, logger)
+	case "healthcheck":
+		// `server healthcheck` — проверка для Docker: в образе нет curl.
+		err = health.Check("http://localhost:" + port + "/healthz")
+	case "migrate":
+		err = migrate(logger)
+	default:
+		err = errors.New("неизвестная команда " + command + " (есть: healthcheck, migrate)")
+	}
+	if err != nil {
+		logger.Error("ошибка", "command", command, "error", err)
 		os.Exit(1)
 	}
+}
+
+// migrate — `server migrate`: применяет миграции и выходит. Отдельным шагом, а не при
+// каждом старте сервера: изменение схемы на проде видно и запускается осознанно.
+// Нужна только DATABASE_URL_UNPOOLED или DATABASE_URL — остальные настройки сервера не нужны.
+func migrate(logger *slog.Logger) error {
+	url := os.Getenv("DATABASE_URL_UNPOOLED")
+	if url == "" {
+		url = os.Getenv("DATABASE_URL")
+	}
+	if url == "" {
+		return errors.New("не задана DATABASE_URL_UNPOOLED или DATABASE_URL")
+	}
+	if err := migrations.Up(url); err != nil {
+		return err
+	}
+	version, _ := migrations.Latest()
+	logger.Info("миграции применены", "version", version)
+	return nil
 }
 
 func run(port string, logger *slog.Logger) error {

@@ -1,14 +1,17 @@
-// Package httpx — общие хелперы HTTP-хендлеров: JSON-ответы, ошибки, разбор id и тела.
+// Package httpx — общие хелперы HTTP-хендлеров: JSON-ответы, ошибки, разбор id, тела и страниц.
 package httpx
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -17,23 +20,59 @@ import (
 // MaxBodyBytes — предел тела запроса: больше — 413.
 const MaxBodyBytes = 1 << 20
 
+// Общие коды ошибок. Код — для программ (не меняется), текст — для людей (может меняться).
+// Коды, относящиеся к одной сущности, объявлены в её пакете.
+const (
+	CodeInvalidID    = "invalid_id"
+	CodeInvalidJSON  = "invalid_json"
+	CodeBodyTooLarge = "body_too_large"
+	CodeInvalidQuery = "invalid_query"
+	CodeValidation   = "validation_error"
+	CodeUnauthorized = "unauthorized"
+	CodeRateLimited  = "rate_limited"
+	CodeInternal     = "internal_error"
+)
+
+type loggerKey struct{}
+
+// WithLogger кладёт в контекст логгер запроса (с его request_id).
+func WithLogger(ctx context.Context, l *slog.Logger) context.Context {
+	return context.WithValue(ctx, loggerKey{}, l)
+}
+
+// Logger достаёт логгер запроса из контекста. Если его там нет (тесты, фоновые задачи) —
+// общий slog.Default().
+func Logger(ctx context.Context) *slog.Logger {
+	if l, ok := ctx.Value(loggerKey{}).(*slog.Logger); ok {
+		return l
+	}
+	return slog.Default()
+}
+
 func WriteJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	if err := json.NewEncoder(w).Encode(v); err != nil {
-		slog.Error("запись JSON-ответа", "error", err)
-	}
+	// Ошибка тут — почти всегда отключившийся клиент: статус уже отправлен, исправить нечего,
+	// а сам запрос со статусом и так попадёт в лог через middleware.Logging.
+	_ = json.NewEncoder(w).Encode(v)
 }
 
-// WriteError отвечает в едином формате ошибок: {"success": false, "error": "..."}.
-func WriteError(w http.ResponseWriter, status int, msg string) {
-	WriteJSON(w, status, map[string]any{"success": false, "error": msg})
+// errorBody — единый формат ошибок: {"success": false, "code": "...", "error": "..."}.
+type errorBody struct {
+	Success bool              `json:"success"`
+	Code    string            `json:"code"`
+	Error   string            `json:"error"`
+	Fields  map[string]string `json:"fields,omitempty"` // только у validation_error
 }
 
-// InternalError пишет настоящую ошибку в лог, а клиенту отдаёт только «внутренняя ошибка».
-func InternalError(w http.ResponseWriter, op string, err error) {
-	slog.Error(op, "error", err)
-	WriteError(w, http.StatusInternalServerError, "внутренняя ошибка")
+func WriteError(w http.ResponseWriter, status int, code, msg string) {
+	WriteJSON(w, status, errorBody{Code: code, Error: msg})
+}
+
+// InternalError пишет настоящую ошибку в лог запроса, а клиенту отдаёт только «внутренняя ошибка».
+func InternalError(w http.ResponseWriter, r *http.Request, op string, err error) {
+	Logger(r.Context()).Error(op, "error", err)
+	WriteError(w, http.StatusInternalServerError, CodeInternal, "внутренняя ошибка")
 }
 
 // ParseID читает {id} из пути — UUID вида 01a140dc-0c34-7abb-8d6c-36e2d1879e0d.
@@ -41,7 +80,7 @@ func InternalError(w http.ResponseWriter, op string, err error) {
 func ParseID(w http.ResponseWriter, r *http.Request) (string, bool) {
 	id := r.PathValue("id")
 	if !IsUUID(id) {
-		WriteError(w, http.StatusBadRequest, "неверный id")
+		WriteError(w, http.StatusBadRequest, CodeInvalidID, "неверный id")
 		return "", false
 	}
 	return strings.ToLower(id), true
@@ -88,18 +127,66 @@ func DecodeJSON(w http.ResponseWriter, r *http.Request, v any) bool {
 	var tooLarge *http.MaxBytesError
 	switch {
 	case errors.As(err, &tooLarge):
-		WriteError(w, http.StatusRequestEntityTooLarge, "тело запроса больше 1 МБ")
+		WriteError(w, http.StatusRequestEntityTooLarge, CodeBodyTooLarge, "тело запроса больше 1 МБ")
+	// У encoding/json нет отдельного типа для неизвестного поля — только текст ошибки.
 	case strings.HasPrefix(err.Error(), "json: unknown field "):
-		WriteError(w, http.StatusBadRequest, "неизвестное поле "+strings.TrimPrefix(err.Error(), "json: unknown field "))
+		WriteError(w, http.StatusBadRequest, CodeInvalidJSON, "неизвестное поле "+strings.TrimPrefix(err.Error(), "json: unknown field "))
 	case errors.Is(err, errTrailingData):
-		WriteError(w, http.StatusBadRequest, "лишние данные после JSON")
+		WriteError(w, http.StatusBadRequest, CodeInvalidJSON, "лишние данные после JSON")
 	default:
-		WriteError(w, http.StatusBadRequest, "неверный JSON")
+		WriteError(w, http.StatusBadRequest, CodeInvalidJSON, "неверный JSON")
 	}
 	return false
 }
 
 var errTrailingData = errors.New("лишние данные после JSON")
+
+// Problems — ошибки проверки полей запроса: поле → что с ним не так.
+// Собираются все сразу, чтобы клиент исправил форму за один раз, а не по полю за запрос.
+type Problems map[string]string
+
+// Add запоминает ошибку поля. Пустое msg — ошибки нет; у поля остаётся первая ошибка.
+func (p Problems) Add(field, msg string) {
+	if _, ok := p[field]; msg != "" && !ok {
+		p[field] = msg
+	}
+}
+
+// Text обрезает пробелы по краям *s и проверяет обязательность и длину (в символах, не байтах).
+func (p Problems) Text(field string, s *string, required bool, maxLen int) {
+	*s = strings.TrimSpace(*s)
+	switch {
+	case required && *s == "":
+		p.Add(field, "обязательное поле")
+	case utf8.RuneCountInString(*s) > maxLen:
+		p.Add(field, "не длиннее "+strconv.Itoa(maxLen)+" символов")
+	}
+}
+
+// UUID проверяет, что обязательное поле — UUID, и приводит его к нижнему регистру.
+func (p Problems) UUID(field string, s *string) {
+	*s = strings.ToLower(strings.TrimSpace(*s))
+	switch {
+	case *s == "":
+		p.Add(field, "обязательное поле")
+	case !IsUUID(*s):
+		p.Add(field, "неверный id")
+	}
+}
+
+// Write отвечает 400 со всеми ошибками и возвращает true, если они есть.
+// В "error" — все ошибки одной строкой, в "fields" — по полям, для подсветки в форме.
+func (p Problems) Write(w http.ResponseWriter) bool {
+	if len(p) == 0 {
+		return false
+	}
+	var parts []string
+	for _, field := range slices.Sorted(maps.Keys(p)) {
+		parts = append(parts, field+": "+p[field])
+	}
+	WriteJSON(w, http.StatusBadRequest, errorBody{Code: CodeValidation, Error: strings.Join(parts, "; "), Fields: p})
+	return true
+}
 
 // Размер страницы в списках: ?limit=…&offset=….
 const (
@@ -136,17 +223,4 @@ type ListResponse[T any] struct {
 	Count      int  `json:"count"`
 	Pagination Page `json:"pagination"`
 	Data       []T  `json:"data"`
-}
-
-// CheckText обрезает пробелы по краям *s и проверяет длину.
-// Возвращает текст ошибки для клиента или "", если всё в порядке.
-func CheckText(field string, s *string, required bool, maxLen int) string {
-	*s = strings.TrimSpace(*s)
-	switch {
-	case required && *s == "":
-		return field + " обязателен"
-	case utf8.RuneCountInString(*s) > maxLen:
-		return field + ": не длиннее " + strconv.Itoa(maxLen) + " символов"
-	}
-	return ""
 }

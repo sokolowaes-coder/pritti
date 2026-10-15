@@ -5,9 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"time"
+
+	"pritti/internal/httpx"
 )
 
 // Pinger — всё, что нужно от БД для проверки. *pgxpool.Pool подходит.
@@ -24,7 +25,7 @@ func Handler(db Pinger) http.HandlerFunc {
 
 		status, body := http.StatusOK, "ok"
 		if err := db.Ping(ctx); err != nil {
-			slog.Warn("healthcheck: БД недоступна", "error", err)
+			httpx.Logger(r.Context()).Warn("healthcheck: БД недоступна", "error", err)
 			status, body = http.StatusServiceUnavailable, "unavailable"
 		}
 
