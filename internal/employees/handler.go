@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"pritti/internal/httpx"
+	"pritti/internal/services"
 )
 
 const maxNameLen = 200
@@ -29,6 +30,9 @@ type EmployeeStore interface {
 	Delete(ctx context.Context, id string) error
 	WorkingHours(ctx context.Context, employeeID string) ([]WorkingDay, error)
 	SetWorkingHours(ctx context.Context, employeeID string, days []WorkingDay) error
+	Services(ctx context.Context, employeeID string) ([]services.Service, error)
+	SetServices(ctx context.Context, employeeID string, serviceIDs []string) error
+	ByService(ctx context.Context, serviceID string) ([]Employee, error)
 }
 
 var _ EmployeeStore = (*Storage)(nil)
@@ -132,6 +136,93 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /employees/{id}", h.Delete)
 	mux.HandleFunc("GET /employees/{id}/schedule", h.GetSchedule)
 	mux.HandleFunc("PUT /employees/{id}/schedule", h.PutSchedule)
+	mux.HandleFunc("GET /employees/{id}/services", h.GetServices)
+	mux.HandleFunc("PUT /employees/{id}/services", h.PutServices)
+	// Путь под /services, но отвечает про мастеров — поэтому здесь.
+	mux.HandleFunc("GET /services/{id}/employees", h.ByService)
+}
+
+// EmployeeServices — услуги, которые оказывает мастер.
+type EmployeeServices struct {
+	EmployeeID string             `json:"employee_id"`
+	Services   []services.Service `json:"services"`
+}
+
+func (h *Handler) GetServices(w http.ResponseWriter, r *http.Request) {
+	id, ok := httpx.ParseID(w, r)
+	if !ok {
+		return
+	}
+	list, err := h.storage.Services(r.Context(), id)
+	if errors.Is(err, ErrNotFound) {
+		httpx.WriteError(w, http.StatusNotFound, codeNotFound, msgNotFound)
+		return
+	}
+	if err != nil {
+		httpx.InternalError(w, r, "get employee services", err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, EmployeeServices{EmployeeID: id, Services: list})
+}
+
+// PutServices заменяет весь набор услуг мастера: {"service_ids": ["<uuid>", ...]}.
+// Отвечает тем же, что GetServices, — с названиями и длительностями.
+func (h *Handler) PutServices(w http.ResponseWriter, r *http.Request) {
+	id, ok := httpx.ParseID(w, r)
+	if !ok {
+		return
+	}
+	var in struct {
+		ServiceIDs []string `json:"service_ids"`
+	}
+	if !httpx.DecodeJSON(w, r, &in) {
+		return
+	}
+	p := httpx.Problems{}
+	ids := make([]string, 0, len(in.ServiceIDs))
+	seen := map[string]bool{}
+	for i := range in.ServiceIDs {
+		p.UUID(fmt.Sprintf("service_ids[%d]", i), &in.ServiceIDs[i])
+		if id := in.ServiceIDs[i]; httpx.IsUUID(id) && !seen[id] { // повторы просто схлопываем
+			seen[id] = true
+			ids = append(ids, id)
+		}
+	}
+	if p.Write(w) {
+		return
+	}
+
+	err := h.storage.SetServices(r.Context(), id, ids)
+	switch {
+	case errors.Is(err, ErrNotFound):
+		httpx.WriteError(w, http.StatusNotFound, codeNotFound, msgNotFound)
+		return
+	case errors.Is(err, ErrServiceNotFound):
+		httpx.Problems{"service_ids": "есть несуществующая услуга"}.Write(w)
+		return
+	case err != nil:
+		httpx.InternalError(w, r, "set employee services", err)
+		return
+	}
+	h.GetServices(w, r)
+}
+
+// ByService — GET /services/{id}/employees: кто оказывает услугу.
+func (h *Handler) ByService(w http.ResponseWriter, r *http.Request) {
+	id, ok := httpx.ParseID(w, r)
+	if !ok {
+		return
+	}
+	list, err := h.storage.ByService(r.Context(), id)
+	if errors.Is(err, ErrServiceNotFound) {
+		httpx.WriteError(w, http.StatusNotFound, "service_not_found", "услуга не найдена")
+		return
+	}
+	if err != nil {
+		httpx.InternalError(w, r, "employees by service", err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"success": true, "service_id": id, "count": len(list), "data": list})
 }
 
 func (h *Handler) GetSchedule(w http.ResponseWriter, r *http.Request) {

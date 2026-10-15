@@ -18,6 +18,7 @@ import (
 	"pritti/internal/health"
 	"pritti/internal/middleware"
 	"pritti/internal/records"
+	"pritti/internal/services"
 	"pritti/migrations"
 )
 
@@ -164,9 +165,14 @@ func New(ctx context.Context, cfg Config) (h http.Handler, close func(), err err
 // Отдельно от New, чтобы тесты могли передать свою БД без миграций и переменных окружения.
 func NewHandler(db *pgxpool.Pool, cfg Config) http.Handler {
 	mux := http.NewServeMux()
-	records.NewHandler(records.NewStorage(db), cfg.Location).Register(mux)
+	employeeStore := employees.NewStorage(db)
+	serviceStore := services.NewStorage(db)
+	booking := records.NewBooking(records.NewStorage(db), serviceStore, employeeStore, cfg.Location)
+
+	records.NewHandler(booking).Register(mux)
 	clients.NewHandler(clients.NewStorage(db)).Register(mux)
-	employees.NewHandler(employees.NewStorage(db)).Register(mux)
+	employees.NewHandler(employeeStore).Register(mux)
+	services.NewHandler(serviceStore).Register(mux)
 	mux.HandleFunc("GET /healthz", health.Handler(db))
 	docs.Register(mux)
 

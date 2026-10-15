@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -18,9 +19,12 @@ var (
 	ErrEmployeeNotFound = errors.New("record employee not found")
 	ErrEmployeeBusy     = errors.New("employee has another record at this time")
 	ErrClientBusy       = errors.New("client has another record at this time")
+	ErrServiceNotFound  = errors.New("record service not found")
+	// ErrServiceNotProvided — мастер не оказывает услугу (правило Booking, не БД).
+	ErrServiceNotProvided = errors.New("employee does not provide the service")
 )
 
-const recordColumns = `id, name, description, client_id, employee_id, starts_at, ends_at, status, created_at`
+const recordColumns = `id, name, description, client_id, employee_id, service_id, starts_at, ends_at, status, created_at`
 
 type Storage struct {
 	db *pgxpool.Pool
@@ -120,7 +124,7 @@ func escapeLike(s string) string {
 // scanRecord читает колонки recordColumns и, если передан extra, — ещё одну колонку после них.
 func scanRecord(row pgx.Row, extra ...any) (Record, error) {
 	var rec Record
-	dest := append([]any{&rec.ID, &rec.Name, &rec.Description, &rec.ClientID, &rec.EmployeeID,
+	dest := append([]any{&rec.ID, &rec.Name, &rec.Description, &rec.ClientID, &rec.EmployeeID, &rec.ServiceID,
 		&rec.StartsAt, &rec.EndsAt, &rec.Status, &rec.CreatedAt}, extra...)
 	err := row.Scan(dest...)
 	return rec, err
@@ -139,10 +143,10 @@ func (s *Storage) GetByID(ctx context.Context, id string) (Record, error) {
 
 func (s *Storage) Create(ctx context.Context, in RecordInput) (Record, error) {
 	rec, err := scanRecord(s.db.QueryRow(ctx,
-		`INSERT INTO records (name, description, client_id, employee_id, starts_at, ends_at, status)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7)
+		`INSERT INTO records (name, description, client_id, employee_id, service_id, starts_at, ends_at, status)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 		 RETURNING `+recordColumns,
-		in.Name, in.Description, in.ClientID, in.EmployeeID, in.StartsAt, in.EndsAt, in.Status,
+		in.Name, in.Description, in.ClientID, in.EmployeeID, in.ServiceID, in.StartsAt, in.EndsAt, in.Status,
 	))
 	return rec, constraintError(err)
 }
@@ -150,10 +154,10 @@ func (s *Storage) Create(ctx context.Context, in RecordInput) (Record, error) {
 func (s *Storage) Update(ctx context.Context, id string, in RecordInput) (Record, error) {
 	rec, err := scanRecord(s.db.QueryRow(ctx,
 		`UPDATE records SET name = $2, description = $3, client_id = $4, employee_id = $5,
-		                    starts_at = $6, ends_at = $7, status = $8
+		                    service_id = $6, starts_at = $7, ends_at = $8, status = $9
 		 WHERE id = $1
 		 RETURNING `+recordColumns,
-		id, in.Name, in.Description, in.ClientID, in.EmployeeID, in.StartsAt, in.EndsAt, in.Status,
+		id, in.Name, in.Description, in.ClientID, in.EmployeeID, in.ServiceID, in.StartsAt, in.EndsAt, in.Status,
 	))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Record{}, ErrNotFound
@@ -173,12 +177,31 @@ func constraintError(err error) error {
 		return ErrClientNotFound
 	case pgErr.Code == "23503" && pgErr.ConstraintName == "records_employee_id_fkey":
 		return ErrEmployeeNotFound
+	case pgErr.Code == "23503" && pgErr.ConstraintName == "records_service_id_fkey":
+		return ErrServiceNotFound // услугу удалили между проверкой и записью
 	case pgErr.Code == "23P01" && pgErr.ConstraintName == "records_employee_no_overlap":
 		return ErrEmployeeBusy
 	case pgErr.Code == "23P01" && pgErr.ConstraintName == "records_client_no_overlap":
 		return ErrClientBusy
 	}
 	return err
+}
+
+// Busy — занятое время мастера в промежутке [from, to): его записи, кроме отменённых.
+// Условие через && по tstzrange — как в ограничении records_employee_no_overlap,
+// поэтому Postgres может взять его GiST-индекс, а не читать все записи мастера.
+func (s *Storage) Busy(ctx context.Context, employeeID string, from, to time.Time) ([]Interval, error) {
+	rows, err := s.db.Query(ctx,
+		`SELECT starts_at, ends_at FROM records
+		 WHERE employee_id = $1 AND status <> 'cancelled'
+		   AND tstzrange(starts_at, ends_at) && tstzrange($2, $3)
+		 ORDER BY starts_at`,
+		employeeID, from, to,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, pgx.RowToStructByPos[Interval])
 }
 
 func (s *Storage) Delete(ctx context.Context, id string) error {

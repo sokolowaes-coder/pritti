@@ -42,6 +42,12 @@ func TestHandlerRoutesAndAPIKey(t *testing.T) {
 		{"сотрудники с ключом", "GET", "/employees", "secret", http.StatusOK},
 		{"клиент по id", "GET", "/clients/00000000-0000-0000-0000-000000000999", "secret", http.StatusNotFound},
 		{"сотрудник по id", "GET", "/employees/00000000-0000-0000-0000-000000000999", "secret", http.StatusNotFound},
+		{"услуги с ключом", "GET", "/services", "secret", http.StatusOK},
+		{"услуги без ключа", "GET", "/services", "", http.StatusUnauthorized},
+		{"график мастера", "GET", "/employees/00000000-0000-0000-0000-000000000999/schedule", "secret", http.StatusNotFound},
+		{"услуги мастера", "GET", "/employees/00000000-0000-0000-0000-000000000999/services", "secret", http.StatusNotFound},
+		{"мастера услуги", "GET", "/services/00000000-0000-0000-0000-000000000999/employees", "secret", http.StatusNotFound},
+		{"слоты", "GET", "/slots?employeeId=00000000-0000-0000-0000-000000000999&date=2026-10-20&duration=60", "secret", http.StatusNotFound},
 		{"неизвестный путь", "GET", "/nope", "secret", http.StatusNotFound},
 	}
 	for _, tt := range tests {

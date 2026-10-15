@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"pritti/internal/httpx"
+	"pritti/internal/services"
 )
 
 type fakeStore struct {
@@ -19,6 +20,7 @@ type fakeStore struct {
 	nextID     int
 	hasRecords map[string]bool // у каких сотрудников есть записи — их нельзя удалить
 	hours      map[string][]WorkingDay
+	provides   map[string][]string // мастер → id услуг
 	err        error
 }
 
@@ -111,6 +113,54 @@ func (s *fakeStore) SetWorkingHours(ctx context.Context, employeeID string, days
 	}
 	s.hours[employeeID] = days
 	return nil
+}
+
+// knownServices — какие услуги «есть в БД» у фейка: uid(10) и uid(11).
+var knownServices = map[string]services.Service{
+	uid(10): {ID: uid(10), Name: "Стрижка", DurationMinutes: 60},
+	uid(11): {ID: uid(11), Name: "Маникюр", DurationMinutes: 30},
+}
+
+func (s *fakeStore) Services(ctx context.Context, employeeID string) ([]services.Service, error) {
+	if _, err := s.GetByID(ctx, employeeID); err != nil {
+		return nil, err
+	}
+	list := []services.Service{}
+	for _, id := range s.provides[employeeID] {
+		list = append(list, knownServices[id])
+	}
+	return list, nil
+}
+
+func (s *fakeStore) SetServices(ctx context.Context, employeeID string, serviceIDs []string) error {
+	if _, err := s.GetByID(ctx, employeeID); err != nil {
+		return err
+	}
+	for _, id := range serviceIDs {
+		if _, ok := knownServices[id]; !ok {
+			return ErrServiceNotFound
+		}
+	}
+	if s.provides == nil {
+		s.provides = map[string][]string{}
+	}
+	s.provides[employeeID] = serviceIDs
+	return nil
+}
+
+func (s *fakeStore) ByService(ctx context.Context, serviceID string) ([]Employee, error) {
+	if _, ok := knownServices[serviceID]; !ok {
+		return nil, ErrServiceNotFound
+	}
+	list := []Employee{}
+	for _, e := range s.employees {
+		for _, id := range s.provides[e.ID] {
+			if id == serviceID {
+				list = append(list, e)
+			}
+		}
+	}
+	return list, nil
 }
 
 // uid — n-й тестовый id: 00000000-0000-0000-0000-000000000001 и т. д.
@@ -273,5 +323,33 @@ func TestSchedule(t *testing.T) {
 				t.Errorf("статус %d, тело %s; ожидали %d и %s", rec.Code, rec.Body, tt.wantStatus, tt.wantInBody)
 			}
 		})
+	}
+}
+
+func TestEmployeeServices(t *testing.T) {
+	store := newFakeStore("Анна", "Борис")
+	const path = "/employees/00000000-0000-0000-0000-000000000001/services"
+
+	steps := []struct {
+		name, method, path, body string
+		wantStatus               int
+		wantInBody               string
+	}{
+		{"сначала услуг нет", "GET", path, "", 200, `"services":[]`},
+		{"задать с повтором", "PUT", path, `{"service_ids":["` + uid(10) + `","` + uid(11) + `","` + uid(10) + `"]}`, 200, `"name":"Маникюр"`},
+		{"кто делает стрижку", "GET", "/services/" + uid(10) + "/employees", "", 200, `"count":1`},
+		{"нет такой услуги в списке", "PUT", path, `{"service_ids":["` + uid(999) + `"]}`, 400, "несуществующая услуга"},
+		{"id не UUID", "PUT", path, `{"service_ids":["abc"]}`, 400, `"service_ids[0]"`},
+		{"убрать все", "PUT", path, `{"service_ids":[]}`, 200, `"services":[]`},
+		{"теперь стрижку никто не делает", "GET", "/services/" + uid(10) + "/employees", "", 200, `"count":0`},
+		{"кто делает несуществующую услугу", "GET", "/services/" + uid(999) + "/employees", "", 404, "service_not_found"},
+		{"нет мастера", "GET", "/employees/" + uid(999) + "/services", "", 404, "employee_not_found"},
+		{"нет мастера (PUT)", "PUT", "/employees/" + uid(999) + "/services", `{"service_ids":[]}`, 404, "employee_not_found"},
+	}
+	for _, st := range steps {
+		rec := do(t, store, st.method, st.path, st.body)
+		if rec.Code != st.wantStatus || !strings.Contains(rec.Body.String(), st.wantInBody) {
+			t.Errorf("%s: статус %d, тело %s; ожидали %d и %s", st.name, rec.Code, rec.Body, st.wantStatus, st.wantInBody)
+		}
 	}
 }

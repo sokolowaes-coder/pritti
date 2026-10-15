@@ -181,3 +181,81 @@ func TestStorageWorkingHours(t *testing.T) {
 		t.Errorf("после удаления мастера осталось %d дней графика, %v", left, err)
 	}
 }
+
+func TestStorageServices(t *testing.T) {
+	db := testdb.New(t)
+	s := NewStorage(db)
+	ctx := context.Background()
+
+	anna, err := s.Create(ctx, EmployeeInput{Name: "Анна"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	boris, err := s.Create(ctx, EmployeeInput{Name: "Борис"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var haircut, manicure string
+	if err := db.QueryRow(ctx, `INSERT INTO services (name, duration_minutes, price_kopecks) VALUES ('Стрижка', 60, 150000) RETURNING id`).Scan(&haircut); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(ctx, `INSERT INTO services (name, duration_minutes, price_kopecks) VALUES ('Маникюр', 30, 90000) RETURNING id`).Scan(&manicure); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.SetServices(ctx, anna.ID, []string{haircut, manicure}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetServices(ctx, boris.ID, []string{haircut}); err != nil {
+		t.Fatal(err)
+	}
+
+	list, err := s.Services(ctx, anna.ID)
+	if err != nil || len(list) != 2 || list[0].Name != "Маникюр" || list[1].DurationMinutes != 60 {
+		t.Errorf("услуги Анны по алфавиту: %+v, %v", list, err)
+	}
+	if who, err := s.ByService(ctx, haircut); err != nil || len(who) != 2 || who[0].Name != "Анна" {
+		t.Errorf("кто стрижёт: %+v, %v", who, err)
+	}
+	if who, err := s.ByService(ctx, manicure); err != nil || len(who) != 1 {
+		t.Errorf("кто делает маникюр: %+v, %v", who, err)
+	}
+
+	for _, tt := range []struct {
+		employee, service string
+		want              bool
+	}{{anna.ID, manicure, true}, {boris.ID, manicure, false}, {boris.ID, haircut, true}} {
+		if got, err := s.Provides(ctx, tt.employee, tt.service); err != nil || got != tt.want {
+			t.Errorf("Provides(%s, %s) = %v, %v; ожидали %v", tt.employee, tt.service, got, err, tt.want)
+		}
+	}
+
+	// Несуществующая услуга в списке — ошибка, и старый набор остаётся (транзакция).
+	if err := s.SetServices(ctx, anna.ID, []string{haircut, missingID}); !errors.Is(err, ErrServiceNotFound) {
+		t.Errorf("SetServices с несуществующей услугой: %v", err)
+	}
+	if list, _ := s.Services(ctx, anna.ID); len(list) != 2 {
+		t.Errorf("после неудачной замены набор изменился: %+v", list)
+	}
+
+	// Пустой набор — мастер не оказывает ничего.
+	if err := s.SetServices(ctx, boris.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+	if list, err := s.Services(ctx, boris.ID); err != nil || list == nil || len(list) != 0 {
+		t.Errorf("пустой набор: %+v, %v", list, err)
+	}
+
+	for name, err := range map[string]error{
+		"Services":    func() error { _, err := s.Services(ctx, missingID); return err }(),
+		"SetServices": s.SetServices(ctx, missingID, nil),
+		"Provides":    func() error { _, err := s.Provides(ctx, missingID, haircut); return err }(),
+	} {
+		if !errors.Is(err, ErrNotFound) {
+			t.Errorf("%s несуществующего мастера: %v, ожидали ErrNotFound", name, err)
+		}
+	}
+	if _, err := s.ByService(ctx, missingID); !errors.Is(err, ErrServiceNotFound) {
+		t.Errorf("ByService несуществующей услуги: %v", err)
+	}
+}

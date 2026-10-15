@@ -20,18 +20,20 @@ type Record struct {
 	Description string    `json:"description"`
 	ClientID    string    `json:"client_id"`
 	EmployeeID  string    `json:"employee_id"`
+	ServiceID   *string   `json:"service_id"` // null — запись без услуги
 	StartsAt    time.Time `json:"starts_at"`
 	EndsAt      time.Time `json:"ends_at"`
 	Status      string    `json:"status"`
 	CreatedAt   time.Time `json:"created_at"`
 }
 
-// RecordInput — уже проверенные поля записи для создания и изменения.
+// RecordInput — уже проверенные и заполненные поля записи для хранилища (готовит Booking).
 type RecordInput struct {
 	Name        string
 	Description string
 	ClientID    string
 	EmployeeID  string
+	ServiceID   *string // nil — без услуги
 	StartsAt    time.Time
 	EndsAt      time.Time
 	Status      string

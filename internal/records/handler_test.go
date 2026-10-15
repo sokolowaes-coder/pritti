@@ -11,7 +11,9 @@ import (
 	"testing"
 	"time"
 
+	"pritti/internal/employees"
 	"pritti/internal/httpx"
+	"pritti/internal/services"
 )
 
 // uid — n-й тестовый id: 00000000-0000-0000-0000-000000000001 и т. д.
@@ -123,7 +125,7 @@ func (s *fakeStore) Update(ctx context.Context, id string, in RecordInput) (Reco
 
 func apply(r *Record, in RecordInput) {
 	r.Name, r.Description = in.Name, in.Description
-	r.ClientID, r.EmployeeID = in.ClientID, in.EmployeeID
+	r.ClientID, r.EmployeeID, r.ServiceID = in.ClientID, in.EmployeeID, in.ServiceID
 	r.StartsAt, r.EndsAt, r.Status = in.StartsAt, in.EndsAt, in.Status
 }
 
@@ -142,10 +144,75 @@ func (s *fakeStore) Delete(ctx context.Context, id string) error {
 
 // do отправляет запрос в хендлер через настоящий роутер,
 // чтобы заодно проверить пути и {id}.
+func (s *fakeStore) Busy(ctx context.Context, employeeID string, from, to time.Time) ([]Interval, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	var busy []Interval
+	for _, r := range s.records {
+		iv := Interval{StartsAt: r.StartsAt, EndsAt: r.EndsAt}
+		if r.EmployeeID == employeeID && r.Status != StatusCancelled && iv.overlaps(from, to) {
+			busy = append(busy, iv)
+		}
+	}
+	return busy, nil
+}
+
+// testNow — «сейчас» в тестах: 16.10.2026 09:00 UTC, до первой записи newFakeStore.
+var testNow = time.Date(2026, 10, 16, 9, 0, 0, 0, time.UTC)
+
+// Услуги в тестах: стрижку (uid 10, 60 минут) делает мастер uid(1),
+// маникюр (uid 11, 30 минут) — мастер uid(2).
+var (
+	serviceHaircut  = services.Service{ID: uid(10), Name: "Стрижка", DurationMinutes: 60}
+	serviceManicure = services.Service{ID: uid(11), Name: "Маникюр", DurationMinutes: 30}
+)
+
+type fakeCatalog struct{}
+
+func (fakeCatalog) GetByID(ctx context.Context, id string) (services.Service, error) {
+	for _, s := range []services.Service{serviceHaircut, serviceManicure} {
+		if s.ID == id {
+			return s, nil
+		}
+	}
+	return services.Service{}, services.ErrNotFound
+}
+
+// fakeStaff — мастера uid(1) и uid(2): оба работают с понедельника по субботу 10:00–19:00.
+type fakeStaff struct{}
+
+func (fakeStaff) exists(id string) bool { return id == uid(1) || id == uid(2) }
+
+func (s fakeStaff) WorkingHours(ctx context.Context, employeeID string) ([]employees.WorkingDay, error) {
+	if !s.exists(employeeID) {
+		return nil, employees.ErrNotFound
+	}
+	var days []employees.WorkingDay
+	for wd := 1; wd <= 6; wd++ {
+		days = append(days, employees.WorkingDay{Weekday: wd, Start: "10:00", End: "19:00"})
+	}
+	return days, nil
+}
+
+func (s fakeStaff) Provides(ctx context.Context, employeeID, serviceID string) (bool, error) {
+	if !s.exists(employeeID) {
+		return false, employees.ErrNotFound
+	}
+	return employeeID == uid(1) && serviceID == serviceHaircut.ID ||
+		employeeID == uid(2) && serviceID == serviceManicure.ID, nil
+}
+
+func newTestBooking(store RecordStore) *Booking {
+	b := NewBooking(store, fakeCatalog{}, fakeStaff{}, time.UTC)
+	b.now = func() time.Time { return testNow }
+	return b
+}
+
 func do(t *testing.T, store RecordStore, method, path, body string) *httptest.ResponseRecorder {
 	t.Helper()
 	mux := http.NewServeMux()
-	NewHandler(store, time.UTC).Register(mux)
+	NewHandler(newTestBooking(store)).Register(mux)
 	req := httptest.NewRequest(method, path, strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
@@ -191,7 +258,15 @@ func TestHandlerStatusCodes(t *testing.T) {
 		{"id — число", "GET", "/records/-1", "", http.StatusBadRequest},
 
 		{"создание", "POST", "/records", body(nil), http.StatusCreated},
-		{"создание с описанием и статусом", "POST", "/records", body(m{"description": "текст", "status": "completed"}), http.StatusCreated},
+		{"создание с описанием и статусом", "POST", "/records", body(m{"description": "текст", "status": "cancelled"}), http.StatusCreated},
+		{"создание: completed для прошедшего визита", "POST", "/records", body(m{"starts_at": "2026-10-15T10:00:00", "ends_at": "2026-10-15T11:00:00", "status": "completed"}), http.StatusCreated},
+		{"создание: completed для будущего визита", "POST", "/records", body(m{"status": "completed"}), http.StatusBadRequest},
+		{"создание: no_show для будущего визита", "POST", "/records", body(m{"status": "no_show"}), http.StatusBadRequest},
+		{"создание с услугой: без name и ends_at", "POST", "/records", body(m{"name": nil, "ends_at": nil, "service_id": serviceHaircut.ID}), http.StatusCreated},
+		{"создание с услугой: мастер её не оказывает", "POST", "/records", body(m{"service_id": serviceManicure.ID}), http.StatusBadRequest},
+		{"создание с услугой: нет такой", "POST", "/records", body(m{"service_id": uid(999)}), http.StatusBadRequest},
+		{"создание: service_id не UUID", "POST", "/records", body(m{"service_id": "abc"}), http.StatusBadRequest},
+		{"создание без услуги и без ends_at", "POST", "/records", body(m{"ends_at": nil}), http.StatusBadRequest},
 		{"создание: время с поясом", "POST", "/records", body(m{"starts_at": "2026-10-17T15:00:00+03:00", "ends_at": "2026-10-17T16:00:00+03:00"}), http.StatusCreated},
 		{"создание: пустое имя", "POST", "/records", body(m{"name": ""}), http.StatusBadRequest},
 		{"создание: имя из пробелов", "POST", "/records", body(m{"name": "   "}), http.StatusBadRequest},
@@ -407,7 +482,8 @@ func TestCreateTrimsName(t *testing.T) {
 
 func TestUpdateChangesFields(t *testing.T) {
 	store := newFakeStore("старая")
-	do(t, store, "PUT", "/records/00000000-0000-0000-0000-000000000001", body(m{"description": "описание", "status": "no_show"}))
+	do(t, store, "PUT", "/records/00000000-0000-0000-0000-000000000001",
+		body(m{"description": "описание", "status": "no_show", "starts_at": "2026-10-15T10:00:00", "ends_at": "2026-10-15T11:00:00"}))
 
 	if got := store.records[0]; got.Name != "новая" || got.Description != "описание" || got.Status != StatusNoShow {
 		t.Errorf("после изменения %+v", got)

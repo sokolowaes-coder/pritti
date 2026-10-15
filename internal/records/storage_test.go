@@ -330,3 +330,47 @@ func TestStorageListFilters(t *testing.T) {
 		})
 	}
 }
+
+func TestStorageServiceAndBusy(t *testing.T) {
+	s := newTestStorage(t)
+	ctx := context.Background()
+	clientID, employeeID := newRefs(t, s)
+	otherClient := newClient(t, s, "другой клиент", "+79990001122")
+
+	var serviceID string
+	if err := s.db.QueryRow(ctx, `INSERT INTO services (name, duration_minutes, price_kopecks) VALUES ('Стрижка', 60, 150000) RETURNING id`).Scan(&serviceID); err != nil {
+		t.Fatal(err)
+	}
+
+	in := visit("по услуге", clientID, employeeID, 10, 11)
+	in.ServiceID = &serviceID
+	rec, err := s.Create(ctx, in)
+	if err != nil || rec.ServiceID == nil || *rec.ServiceID != serviceID {
+		t.Fatalf("Create с услугой: %+v, %v", rec, err)
+	}
+	missing := missingID
+	in.ServiceID = &missing
+	if _, err := s.Update(ctx, rec.ID, in); !errors.Is(err, ErrServiceNotFound) {
+		t.Errorf("Update с несуществующей услугой: %v, ожидали ErrServiceNotFound", err)
+	}
+
+	cancelled := visit("отменённая", otherClient, employeeID, 12, 13)
+	cancelled.Status = StatusCancelled
+	for _, in := range []RecordInput{visit("вечер", otherClient, employeeID, 15, 16), cancelled} {
+		if _, err := s.Create(ctx, in); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	busy, err := s.Busy(ctx, employeeID, at(10, 30), at(16, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 10–11 задевает окно, 15–16 внутри, отменённая 12–13 не в счёт.
+	if len(busy) != 2 || !busy[0].StartsAt.Equal(at(10, 0)) || !busy[1].StartsAt.Equal(at(15, 0)) {
+		t.Errorf("Busy: %+v", busy)
+	}
+	if busy, _ := s.Busy(ctx, employeeID, at(11, 0), at(15, 0)); len(busy) != 0 {
+		t.Errorf("окно 11–15 между записями (концы не пересекаются): %+v", busy)
+	}
+}
