@@ -3,14 +3,22 @@ info:
   title: Pritti API
   version: 1.0.0
   description: |
-    Записи, клиенты и сотрудники. У записи обязательны клиент и сотрудник —
-    создайте их сначала через `POST /clients` и `POST /employees`.
+    Онлайн-запись к мастерам. Обычный сценарий:
+
+    1. `GET /services` — выбрать услугу;
+    2. `GET /services/{id}/employees` — кто её оказывает;
+    3. `GET /slots?employeeId=…&date=…&serviceId=…` — когда мастер свободен;
+    4. `POST /records` с `service_id` и `starts_at` — название и конец возьмутся из услуги.
+
+    Мастеру задают график (`PUT /employees/{id}/schedule`) и услуги (`PUT /employees/{id}/services`):
+    записать на услугу можно только к мастеру, который её оказывает.
 
     Каждый запрос, кроме `/healthz` и документации, должен нести заголовок `X-API-Key`
     (кнопка **Authorize**). Без ключа — `401`.
 
-    Запись — визит клиента к мастеру с `starts_at` до `ends_at`. У одного мастера записи
-    не пересекаются (отменённые не в счёт) — иначе `409 employee_busy`.
+    Запись — визит клиента к мастеру с `starts_at` до `ends_at`. Записи одного мастера
+    не пересекаются (иначе `409 employee_busy`), одного клиента — тоже (`409 client_busy`);
+    отменённые не в счёт.
 
     Ошибки: `{"success": false, "code": "...", "error": "..."}`. `code` не меняется — по нему
     и проверяйте; `error` — текст для людей. У `validation_error` есть ещё `fields`:
@@ -26,6 +34,8 @@ tags:
   - name: Записи
   - name: Клиенты
   - name: Сотрудники
+  - name: Услуги
+  - name: Расписание
   - name: Служебное
 
 paths:
@@ -107,7 +117,7 @@ paths:
                 code: validation_error
                 error: "client_id: клиент не найден; ends_at: должно быть позже starts_at"
                 fields: { client_id: клиент не найден, ends_at: должно быть позже starts_at }
-        "409": { $ref: "#/components/responses/EmployeeBusy" }
+        "409": { $ref: "#/components/responses/Busy" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "500": { $ref: "#/components/responses/Internal" }
 
@@ -143,7 +153,7 @@ paths:
               schema: { $ref: "#/components/schemas/Record" }
         "400": { $ref: "#/components/responses/BadRequest" }
         "404": { $ref: "#/components/responses/RecordNotFound" }
-        "409": { $ref: "#/components/responses/EmployeeBusy" }
+        "409": { $ref: "#/components/responses/Busy" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "500": { $ref: "#/components/responses/Internal" }
     delete:
@@ -300,6 +310,213 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "500": { $ref: "#/components/responses/Internal" }
 
+  /services:
+    get:
+      tags: [Услуги]
+      summary: Список услуг по алфавиту
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+      responses:
+        "200":
+          description: Страница услуг
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ServiceList" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/Internal" }
+    post:
+      tags: [Услуги]
+      summary: Создать услугу
+      requestBody: { $ref: "#/components/requestBodies/Service" }
+      responses:
+        "201":
+          description: Созданная услуга
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Service" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "409": { $ref: "#/components/responses/ServiceNameTaken" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/Internal" }
+
+  /services/{id}:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+    get:
+      tags: [Услуги]
+      summary: Услуга по id
+      responses:
+        "200":
+          description: Услуга
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Service" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/ServiceNotFound" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/Internal" }
+    put:
+      tags: [Услуги]
+      summary: Изменить услугу
+      requestBody: { $ref: "#/components/requestBodies/Service" }
+      responses:
+        "200":
+          description: Изменённая услуга
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Service" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/ServiceNotFound" }
+        "409": { $ref: "#/components/responses/ServiceNameTaken" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/Internal" }
+    delete:
+      tags: [Услуги]
+      summary: Удалить услугу
+      responses:
+        "204": { description: Удалено }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/ServiceNotFound" }
+        "409": { $ref: "#/components/responses/ServiceHasRecords" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/Internal" }
+
+  /services/{id}/employees:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+    get:
+      tags: [Услуги]
+      summary: Кто оказывает услугу
+      responses:
+        "200":
+          description: Мастера, которые оказывают услугу
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean, example: true }
+                  service_id: { type: string, format: uuid }
+                  count: { type: integer, example: 1 }
+                  data: { type: array, items: { $ref: "#/components/schemas/Person" } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/ServiceNotFound" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/Internal" }
+
+  /employees/{id}/services:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+    get:
+      tags: [Сотрудники]
+      summary: Какие услуги оказывает мастер
+      responses:
+        "200":
+          description: Услуги мастера по алфавиту
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EmployeeServices" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/EmployeeNotFound" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/Internal" }
+    put:
+      tags: [Сотрудники]
+      summary: Задать услуги мастера (заменяет весь набор)
+      description: |
+        Убрать услугу у мастера можно и когда у него есть записи на неё: прошлые визиты
+        остаются, а новые записи на эту услугу к нему не пройдут.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                service_ids:
+                  type: array
+                  items: { type: string, format: uuid }
+                  example: [01a140dc-0c34-7abb-8d6c-36e2d1879e0d]
+      responses:
+        "200":
+          description: Новый набор услуг
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EmployeeServices" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/EmployeeNotFound" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/Internal" }
+
+  /employees/{id}/schedule:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+    get:
+      tags: [Расписание]
+      summary: Недельный график мастера
+      responses:
+        "200":
+          description: График; дней, которых нет в списке, мастер не работает
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Schedule" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/EmployeeNotFound" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/Internal" }
+    put:
+      tags: [Расписание]
+      summary: Задать график мастера (заменяет весь)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                days: { type: array, items: { $ref: "#/components/schemas/WorkingDay" } }
+            example:
+              days:
+                - { weekday: 1, start: "10:00", end: "19:00" }
+                - { weekday: 2, start: "10:00", end: "19:00" }
+                - { weekday: 6, start: "11:00", end: "16:00" }
+      responses:
+        "200":
+          description: Новый график
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Schedule" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/EmployeeNotFound" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/Internal" }
+
+  /slots:
+    get:
+      tags: [Расписание]
+      summary: Свободное время мастера на день
+      description: |
+        Окна внутри рабочих часов мастера в этот день, без пересечений с его записями
+        и не в прошлом. Начала идут с шагом 15 минут. Длительность — из услуги (`serviceId`,
+        мастер должен её оказывать) или в минутах (`duration`), указать нужно что-то одно.
+      parameters:
+        - { name: employeeId, in: query, required: true, schema: { type: string, format: uuid } }
+        - { name: date, in: query, required: true, schema: { type: string, format: date, example: "2026-10-20" } }
+        - { name: serviceId, in: query, schema: { type: string, format: uuid } }
+        - { name: duration, in: query, description: Минуты, 5–720, schema: { type: integer, example: 60 } }
+      responses:
+        "200":
+          description: Свободные окна; в выходной — пустой список
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Slots" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/EmployeeNotFound" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/Internal" }
+
   /healthz:
     get:
       tags: [Служебное]
@@ -357,6 +574,11 @@ components:
                   Российский номер в любом привычном виде: `+79161234567`, `8 (916) 123-45-67`,
                   `+7 916 123-45-67`, `9161234567`. Сохраняется как `+79161234567`.
                 example: 8 (916) 123-45-67
+    Service:
+      required: true
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ServiceInput" }
     Person:
       required: true
       content:
@@ -406,12 +628,30 @@ components:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
           example: { success: false, code: phone_taken, error: "клиент с таким телефоном уже есть" }
-    EmployeeBusy:
-      description: "`employee_busy` — у мастера уже есть запись, пересекающаяся с этим временем"
+    Busy:
+      description: "`employee_busy` или `client_busy` — у мастера или клиента уже есть запись на это время"
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
           example: { success: false, code: employee_busy, error: "у мастера уже есть запись, пересекающаяся с этим временем" }
+    ServiceNotFound:
+      description: Услуги нет
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example: { success: false, code: service_not_found, error: "услуга не найдена" }
+    ServiceNameTaken:
+      description: Услуга с таким названием (без учёта регистра) уже есть
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example: { success: false, code: service_name_taken, error: "услуга с таким названием уже есть" }
+    ServiceHasRecords:
+      description: На услугу есть записи
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example: { success: false, code: service_has_records, error: "на услугу есть записи, сначала удалите или переназначьте их" }
     ClientHasRecords:
       description: На клиента ссылаются записи — сначала удалите или переназначьте их
       content:
@@ -440,6 +680,7 @@ components:
         description: { type: string, example: кабинет 1 }
         client_id: { type: string, format: uuid, example: 01a140dc-0b11-7c2e-9d4f-5a6b7c8d9e0f }
         employee_id: { type: string, format: uuid, example: 01a140dc-0b22-7d3f-8e5a-6b7c8d9e0f1a }
+        service_id: { type: string, format: uuid, nullable: true, description: null — запись без услуги }
         starts_at: { type: string, format: date-time, example: "2026-10-17T07:00:00Z" }
         ends_at: { type: string, format: date-time, example: "2026-10-17T08:00:00Z" }
         status: { $ref: "#/components/schemas/Status" }
@@ -455,9 +696,15 @@ components:
 
     RecordInput:
       type: object
-      required: [name, client_id, employee_id, starts_at, ends_at]
+      description: |
+        С `service_id` можно не передавать `name` и `ends_at` — возьмутся название услуги
+        и начало плюс её длительность. Мастер должен оказывать услугу.
+        Без услуги `name` и `ends_at` обязательны.
+        `completed` и `no_show` — только для визита, который уже начался.
+      required: [client_id, employee_id, starts_at]
       properties:
         name: { type: string, maxLength: 200, example: Чистка лица }
+        service_id: { type: string, format: uuid, example: 01a140dc-0d45-7c11-9e22-3f4a5b6c7d8e }
         description: { type: string, maxLength: 2000, default: "", example: кабинет 1 }
         client_id: { type: string, format: uuid, example: 01a140dc-0b11-7c2e-9d4f-5a6b7c8d9e0f }
         employee_id: { type: string, format: uuid, example: 01a140dc-0b22-7d3f-8e5a-6b7c8d9e0f1a }
@@ -467,7 +714,7 @@ components:
           example: "2026-10-17T10:00:00"
         ends_at:
           type: string
-          description: Конец визита — позже начала, не дольше 12 часов. Формат как у starts_at.
+          description: Конец визита — позже начала, не дольше 12 часов. Формат как у starts_at. Без него — по длительности услуги.
           example: "2026-10-17T11:00:00"
         status:
           allOf: [{ $ref: "#/components/schemas/Status" }]
@@ -550,6 +797,66 @@ components:
           type: array
           items: { $ref: "#/components/schemas/Person" }
 
+    Service:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string, example: Стрижка }
+        duration_minutes: { type: integer, example: 60 }
+        price_kopecks: { type: integer, format: int64, example: 150000, description: "Цена в копейках: 150000 — 1500 ₽" }
+        created_at: { type: string, format: date-time }
+
+    ServiceInput:
+      type: object
+      required: [name, duration_minutes, price_kopecks]
+      properties:
+        name: { type: string, maxLength: 200, example: Стрижка }
+        duration_minutes: { type: integer, minimum: 5, maximum: 720, example: 60 }
+        price_kopecks: { type: integer, format: int64, minimum: 0, maximum: 100000000, example: 150000, description: "Целым числом в копейках — дробные деньги во float теряют точность" }
+
+    ServiceList:
+      type: object
+      properties:
+        success: { type: boolean, example: true }
+        count: { type: integer, example: 1, description: "Всего, без учёта пагинации" }
+        pagination: { $ref: "#/components/schemas/Pagination" }
+        data: { type: array, items: { $ref: "#/components/schemas/Service" } }
+
+    EmployeeServices:
+      type: object
+      properties:
+        employee_id: { type: string, format: uuid }
+        services: { type: array, items: { $ref: "#/components/schemas/Service" } }
+
+    WorkingDay:
+      type: object
+      required: [weekday, start, end]
+      properties:
+        weekday: { type: integer, minimum: 1, maximum: 7, description: "1 — понедельник … 7 — воскресенье", example: 1 }
+        start: { type: string, description: "ЧЧ:ММ по времени салона", example: "10:00" }
+        end: { type: string, description: "ЧЧ:ММ, позже start", example: "19:00" }
+
+    Schedule:
+      type: object
+      properties:
+        employee_id: { type: string, format: uuid }
+        days: { type: array, items: { $ref: "#/components/schemas/WorkingDay" } }
+
+    Slots:
+      type: object
+      properties:
+        success: { type: boolean, example: true }
+        employee_id: { type: string, format: uuid }
+        date: { type: string, format: date, example: "2026-10-20" }
+        duration_minutes: { type: integer, example: 60 }
+        data:
+          type: array
+          items:
+            type: object
+            properties:
+              starts_at: { type: string, format: date-time, example: "2026-10-20T10:00:00+03:00" }
+              ends_at: { type: string, format: date-time, example: "2026-10-20T11:00:00+03:00" }
+
     Error:
       type: object
       properties:
@@ -559,8 +866,9 @@ components:
           description: |
             Код ошибки — не меняется, проверяйте по нему: `invalid_id`, `invalid_json`,
             `invalid_query`, `validation_error`, `body_too_large`, `unauthorized`, `rate_limited`,
-            `record_not_found`, `client_not_found`, `employee_not_found`, `phone_taken`,
-            `client_has_records`, `employee_has_records`, `employee_busy`, `internal_error`.
+            `record_not_found`, `client_not_found`, `employee_not_found`, `service_not_found`,
+            `phone_taken`, `service_name_taken`, `client_has_records`, `employee_has_records`,
+            `service_has_records`, `employee_busy`, `client_busy`, `internal_error`.
           example: validation_error
         error: { type: string, description: Текст для человека — может меняться, example: "ends_at: должно быть позже starts_at" }
         fields:

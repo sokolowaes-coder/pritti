@@ -1,6 +1,6 @@
 # Pritti
 
-Сервис онлайн-записи к мастерам: клиенты, сотрудники и записи.
+Сервис онлайн-записи к мастерам: услуги, мастера с графиком, клиенты и записи без накладок по времени.
 REST API на Go — `net/http` + PostgreSQL (`pgx`).
 
 - API: https://api.pritti.space
@@ -24,6 +24,13 @@ Postgres слушает только `127.0.0.1:5433`. Без `API_KEY` в `.env
 В compose сервер сам применяет миграции при старте (`MIGRATE_ON_START=true`).
 
 Если порт 8080 занят: `HTTP_PORT=8081 docker compose up -d`.
+
+Демо-данные — услуги, три мастера с графиком и услугами, клиенты, прошедшие и будущие записи
+(ставятся в свободные окна из `/slots`):
+
+```sh
+API_KEY=$(grep ^API_KEY= .env | cut -d= -f2) ./scripts/seed.sh   # на пустую базу; нужны curl и jq
+```
 
 Для разработки — только база в Docker, сервер через `go run`:
 
@@ -59,6 +66,13 @@ DATABASE_URL="postgres://app:app@localhost:5433/pritti?sslmode=disable" \
 
 ## API
 
+Обычный сценарий записи:
+
+1. `GET /services` — выбрать услугу;
+2. `GET /services/{id}/employees` — кто её оказывает;
+3. `GET /slots?employeeId=…&date=2026-10-20&serviceId=…` — когда мастер свободен;
+4. `POST /records` с `service_id` и `starts_at` — название и конец возьмутся из услуги.
+
 Swagger UI: [localhost:8080/swagger](http://localhost:8080/swagger) — все методы, схемы и кнопка «Try it out».
 Описание лежит в [internal/docs/openapi.yaml](internal/docs/openapi.yaml): при изменении API обновляйте и его.
 
@@ -78,14 +92,22 @@ Swagger UI: [localhost:8080/swagger](http://localhost:8080/swagger) — все �
  "starts_at": "2026-10-17T10:00:00", "ends_at": "2026-10-17T11:00:00", "status": "scheduled"}
 ```
 
-Обязательны `name`, `client_id`, `employee_id`, `starts_at`, `ends_at`. Время — без пояса (тогда в `APP_TZ`)
-или с поясом: `2026-10-17T10:00:00+03:00`. `ends_at` позже `starts_at`, визит не дольше 12 часов.
-`status`: `scheduled` (по умолчанию), `completed` — пришёл, `cancelled` — отменена, `no_show` — не пришёл.
+Обязательны `client_id`, `employee_id`, `starts_at`. С `service_id` можно не передавать `name` и `ends_at` —
+возьмутся название услуги и начало плюс её длительность; без услуги оба обязательны.
+Время — без пояса (тогда в `APP_TZ`) или с поясом: `2026-10-17T10:00:00+03:00`.
+`ends_at` позже `starts_at`, визит не дольше 12 часов.
+`status`: `scheduled` (по умолчанию), `completed` — пришёл, `cancelled` — отменена, `no_show` — не пришёл;
+`completed` и `no_show` — только для визита, который уже начался.
+
+**Записать на услугу можно только к мастеру, который её оказывает** — иначе `400` с ошибкой поля `service_id`.
+Если мастер перестал оказывать услугу, его прошлые записи на неё остаются, их можно отмечать:
+проверка срабатывает только при новой записи или смене мастера или услуги.
 `PUT` заменяет все поля. Клиент и сотрудник должны существовать — сначала создайте их через
 `POST /clients` и `POST /employees`.
 
-**У мастера не бывает двух записей в одно время** — иначе `409 employee_busy`. Это проверяет сама БД
-(exclusion constraint в миграции 000010), поэтому правило держится и при одновременных запросах.
+**У мастера не бывает двух записей в одно время** — иначе `409 employee_busy`, **у клиента тоже** —
+`409 client_busy`. Это проверяет сама БД (exclusion constraint в миграциях 000010 и 000011), поэтому
+правило держится и при одновременных запросах.
 Отменённые записи время не занимают; интервалы полуоткрытые — запись 10:00–11:00 и следующая с 11:00 не конфликтуют.
 
 ### Клиенты и сотрудники
@@ -102,6 +124,40 @@ Swagger UI: [localhost:8080/swagger](http://localhost:8080/swagger) — все �
 Удалить клиента или сотрудника, на которого ссылаются записи, тоже нельзя — `409`.
 Список постраничный, как у записей (`limit` 1–100, по умолчанию 20, и `offset`):
 `{"success": true, "count": N, "pagination": {"limit": 20, "offset": 0}, "data": [...]}`, где `count` — сколько всего.
+
+### Услуги
+
+`/services` — `GET` (список по алфавиту, постранично), `GET /{id}`, `POST`, `PUT /{id}`, `DELETE /{id}`:
+
+```json
+{"name": "Стрижка", "duration_minutes": 60, "price_kopecks": 150000}
+```
+
+Цена — целым числом в копейках (150000 — 1500 ₽): дробные деньги во float теряют точность.
+Длительность — 5–720 минут. Названия уникальны без учёта регистра (`409 service_name_taken`).
+Удалить услугу, на которую есть записи, нельзя — `409 service_has_records`.
+
+Какие услуги оказывает мастер — `GET /employees/{id}/services`, задать набор целиком —
+`PUT /employees/{id}/services` с `{"service_ids": ["<uuid>", ...]}`. Кто оказывает услугу — `GET /services/{id}/employees`.
+
+### График и свободное время
+
+Недельный график мастера — `GET /employees/{id}/schedule`, задать целиком — `PUT` (одной транзакцией):
+
+```json
+{"days": [{"weekday": 1, "start": "10:00", "end": "19:00"}, {"weekday": 6, "start": "11:00", "end": "16:00"}]}
+```
+
+`weekday` — 1 (понедельник) … 7 (воскресенье), время — по часам салона (`APP_TZ`). Дней, которых нет в списке,
+мастер не работает.
+
+Свободное время — `GET /slots?employeeId=<uuid>&date=2026-10-20&serviceId=<uuid>` (или `&duration=60` в минутах):
+окна внутри рабочих часов, без пересечений с записями мастера и не в прошлом, с шагом 15 минут.
+
+```json
+{"success": true, "employee_id": "…", "date": "2026-10-20", "duration_minutes": 60,
+ "data": [{"starts_at": "2026-10-20T10:00:00+03:00", "ends_at": "2026-10-20T11:00:00+03:00"}, …]}
+```
 
 ### Ошибки
 
@@ -120,8 +176,8 @@ Swagger UI: [localhost:8080/swagger](http://localhost:8080/swagger) — все �
 |--------|------|
 | `400`  | `invalid_id`, `invalid_json` (сломанный JSON, неизвестное поле), `invalid_query` (фильтр), `validation_error` |
 | `401`  | `unauthorized` — нет верного `X-API-Key` |
-| `404`  | `record_not_found`, `client_not_found`, `employee_not_found` |
-| `409`  | `employee_busy`, `phone_taken`, `client_has_records`, `employee_has_records` |
+| `404`  | `record_not_found`, `client_not_found`, `employee_not_found`, `service_not_found` |
+| `409`  | `employee_busy`, `client_busy`, `phone_taken`, `service_name_taken`, `client_has_records`, `employee_has_records`, `service_has_records` |
 | `413`  | `body_too_large` — тело больше 1 МБ |
 | `429`  | `rate_limited` — больше 20 запросов/с с одного IP |
 | `500`  | `internal_error` — подробности только в логе сервера |
@@ -254,6 +310,9 @@ migrations/000003_что_делает.down.sql   -- откат
 
 Уже применённые миграции не редактируй — только добавляй новые.
 
+Миграция 000011 (запрет пересечений у клиента) остановится с понятной ошибкой, если такие пересечения
+уже есть в данных: какие записи отменить или перенести, решает человек, а не миграция.
+
 Миграции 000009 и 000010 ставят расширения `pg_trgm` (триграммные индексы для поиска `fullText`)
 и `btree_gist` (запрет пересечения записей мастера). Оба есть в стандартном образе Postgres и в Neon;
 у роли БД должно быть право `CREATE` на базу.
@@ -281,13 +340,15 @@ cmd/server/          точка входа: HTTP-сервер, graceful shutdown
 internal/app/        конфиг из окружения, сборка приложения: БД, роуты, middleware
 internal/middleware/ request-id, логирование, recover, защитные заголовки, лимит запросов, API-ключ
 internal/health/     /healthz и проверка для Docker
-internal/records/
-  model.go           структура Record
-  filter.go          фильтры списка и формат ответа
+internal/records/    записи — три слоя:
+  handler.go         HTTP: разбор и проверка формата, коды ответов; /records и /slots
+  booking.go         сервисный слой: правила записи (услуга, мастер, длительность, статус), свободное время
   storage.go         SQL-запросы к Postgres
-  handler.go         HTTP-хендлеры и роуты
+  slots.go           подбор свободных окон — чистая функция без БД
+  model.go, filter.go  структура Record, фильтры списка и формат ответа
+internal/services/   услуги: модель, SQL, хендлеры
 internal/clients/    клиенты: модель, SQL, хендлеры (так же устроен internal/employees/)
-internal/employees/  сотрудники
+internal/employees/  сотрудники, их график и услуги
 internal/docs/       openapi.yaml и страница Swagger UI (/swagger)
 internal/httpx/      общие хелперы хендлеров: JSON-ответы, коды ошибок, валидация, разбор id, тела и страниц
 internal/testdb/     временная схема в Postgres для тестов хранилищ
