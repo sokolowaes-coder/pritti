@@ -4,10 +4,14 @@ import (
 	"context"
 	"errors"
 	"net/http"
-	"strings"
 	"time"
 
 	"go-education/internal/httpx"
+)
+
+const (
+	maxNameLen        = 200
+	maxDescriptionLen = 2000
 )
 
 type RecordStore interface {
@@ -132,10 +136,12 @@ func decodeInput(w http.ResponseWriter, r *http.Request) (RecordInput, bool) {
 	if !httpx.DecodeJSON(w, r, &in) {
 		return RecordInput{}, false
 	}
-	var msg string
+	msg := httpx.CheckText("name", &in.Name, true, maxNameLen)
+	if msg == "" {
+		msg = httpx.CheckText("description", &in.Description, false, maxDescriptionLen)
+	}
 	switch {
-	case strings.TrimSpace(in.Name) == "":
-		msg = "name обязателен"
+	case msg != "":
 	case in.ClientID <= 0:
 		msg = "client_id обязателен"
 	case in.EmployeeID <= 0:

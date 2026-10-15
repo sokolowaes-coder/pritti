@@ -54,10 +54,15 @@ func run(port string, logger *slog.Logger) error {
 	}
 	defer closeDB()
 
+	// Таймауты не дают медленным или зависшим клиентам бесконечно держать соединения.
+	// WriteTimeout больше, чем таймаут обработки запроса в app (10 с).
 	srv := &http.Server{
 		Addr:              ":" + port,
 		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      20 * time.Second,
+		IdleTimeout:       60 * time.Second,
 	}
 
 	serverErr := make(chan error, 1)

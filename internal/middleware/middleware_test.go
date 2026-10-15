@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func newTestLogger(buf *bytes.Buffer) *slog.Logger {
@@ -79,6 +80,9 @@ func TestRecoverReturns500(t *testing.T) {
 	if rec.Code != http.StatusInternalServerError {
 		t.Errorf("статус = %d, ожидали 500", rec.Code)
 	}
+	if got := strings.TrimSpace(rec.Body.String()); got != `{"error":"внутренняя ошибка","success":false}` {
+		t.Errorf("тело = %s, ожидали JSON-ошибку", got)
+	}
 	if strings.Contains(rec.Body.String(), "что-то сломалось") {
 		t.Errorf("текст паники утёк клиенту: %s", rec.Body)
 	}
@@ -120,5 +124,50 @@ func TestLoggingSeesRecoveredPanic(t *testing.T) {
 
 	if !strings.Contains(buf.String(), "msg=request") || !strings.Contains(buf.String(), "status=500") {
 		t.Errorf("в логе нет запроса со статусом 500:\n%s", buf.String())
+	}
+}
+
+func TestAPIKey(t *testing.T) {
+	ok := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})
+	tests := []struct {
+		name       string
+		key        string
+		path       string
+		header     string
+		wantStatus int
+	}{
+		{"ключ не настроен — всё открыто", "", "/records", "", 200},
+		{"верный ключ", "secret", "/records", "secret", 200},
+		{"без ключа", "secret", "/records", "", 401},
+		{"неверный ключ", "secret", "/records", "secrex", 401},
+		{"публичный путь без ключа", "secret", "/healthz", "", 200},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest("GET", tt.path, nil)
+			if tt.header != "" {
+				req.Header.Set(APIKeyHeader, tt.header)
+			}
+			rec := httptest.NewRecorder()
+			APIKey(tt.key, "/healthz")(ok).ServeHTTP(rec, req)
+			if rec.Code != tt.wantStatus {
+				t.Errorf("статус = %d, ожидали %d", rec.Code, tt.wantStatus)
+			}
+			if rec.Code == 401 && !strings.Contains(rec.Body.String(), `"success":false`) {
+				t.Errorf("тело 401 не в формате ошибки: %s", rec.Body)
+			}
+		})
+	}
+}
+
+func TestTimeoutSetsDeadline(t *testing.T) {
+	var deadline time.Time
+	var hasDeadline bool
+	h := Timeout(time.Second)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		deadline, hasDeadline = r.Context().Deadline()
+	}))
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/", nil))
+	if !hasDeadline || time.Until(deadline) > time.Second {
+		t.Errorf("deadline = %v, есть = %v", deadline, hasDeadline)
 	}
 }

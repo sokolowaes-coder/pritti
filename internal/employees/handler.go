@@ -4,10 +4,11 @@ import (
 	"context"
 	"errors"
 	"net/http"
-	"strings"
 
 	"go-education/internal/httpx"
 )
+
+const maxNameLen = 200
 
 type EmployeeStore interface {
 	List(ctx context.Context) ([]Employee, error)
@@ -99,8 +100,8 @@ func decodeInput(w http.ResponseWriter, r *http.Request) (EmployeeInput, bool) {
 	if !httpx.DecodeJSON(w, r, &in) {
 		return EmployeeInput{}, false
 	}
-	if strings.TrimSpace(in.Name) == "" {
-		httpx.WriteError(w, http.StatusBadRequest, "name обязателен")
+	if msg := httpx.CheckText("name", &in.Name, true, maxNameLen); msg != "" {
+		httpx.WriteError(w, http.StatusBadRequest, msg)
 		return EmployeeInput{}, false
 	}
 	return in, true

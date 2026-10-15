@@ -2,10 +2,14 @@
 package middleware
 
 import (
+	"context"
+	"crypto/subtle"
 	"log/slog"
 	"net/http"
 	"runtime/debug"
 	"time"
+
+	"go-education/internal/httpx"
 )
 
 // Chain оборачивает h в middlewares; первый в списке выполняется первым.
@@ -59,9 +63,47 @@ func Recover(logger *slog.Logger) func(http.Handler) http.Handler {
 						"error", err,
 						"stack", string(debug.Stack()),
 					)
-					http.Error(w, "внутренняя ошибка", http.StatusInternalServerError)
+					httpx.WriteError(w, http.StatusInternalServerError, "внутренняя ошибка")
 				}
 			}()
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// Timeout ограничивает время обработки запроса: по истечении d контекст запроса
+// отменяется, и запросы к БД, которые его используют, прерываются.
+func Timeout(d time.Duration) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ctx, cancel := context.WithTimeout(r.Context(), d)
+			defer cancel()
+			next.ServeHTTP(w, r.WithContext(ctx))
+		})
+	}
+}
+
+// APIKeyHeader — заголовок, в котором клиент передаёт ключ.
+const APIKeyHeader = "X-API-Key"
+
+// APIKey пропускает только запросы с заголовком X-API-Key, равным key.
+// Пути из public доступны без ключа. Пустой key выключает проверку (локальная разработка).
+func APIKey(key string, public ...string) func(http.Handler) http.Handler {
+	open := make(map[string]bool, len(public))
+	for _, p := range public {
+		open[p] = true
+	}
+	return func(next http.Handler) http.Handler {
+		if key == "" {
+			return next
+		}
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			got := r.Header.Get(APIKeyHeader)
+			// ConstantTimeCompare: время сравнения не подсказывает, сколько символов угадано.
+			if !open[r.URL.Path] && subtle.ConstantTimeCompare([]byte(got), []byte(key)) != 1 {
+				httpx.WriteError(w, http.StatusUnauthorized, "нужен верный заголовок "+APIKeyHeader)
+				return
+			}
 			next.ServeHTTP(w, r)
 		})
 	}

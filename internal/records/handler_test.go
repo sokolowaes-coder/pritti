@@ -149,6 +149,8 @@ func TestHandlerStatusCodes(t *testing.T) {
 		{"создание: нет клиента", "POST", "/records", `{"name":"x","client_id":999,"employee_id":1}`, http.StatusBadRequest},
 		{"создание: нет сотрудника", "POST", "/records", `{"name":"x","client_id":1,"employee_id":999}`, http.StatusBadRequest},
 		{"создание: сломанный JSON", "POST", "/records", `{`, http.StatusBadRequest},
+		{"создание: имя длиннее 200", "POST", "/records", `{"name":"` + strings.Repeat("я", 201) + `","client_id":1,"employee_id":1}`, http.StatusBadRequest},
+		{"создание: опечатка в поле", "POST", "/records", `{"name":"x","clientid":1,"employee_id":1}`, http.StatusBadRequest},
 
 		{"изменение", "PUT", "/records/1", `{"name":"другая","client_id":1,"employee_id":1}`, http.StatusOK},
 		{"изменение: нет записи", "PUT", "/records/999", `{"name":"x","client_id":1,"employee_id":1}`, http.StatusNotFound},
@@ -304,6 +306,14 @@ func TestCreateReturnsRecord(t *testing.T) {
 	}
 	if len(store.records) != 1 {
 		t.Errorf("в хранилище %d записей, ожидали 1", len(store.records))
+	}
+}
+
+func TestCreateTrimsName(t *testing.T) {
+	store := newFakeStore()
+	do(t, store, "POST", "/records", `{"name":"  новая  ","client_id":1,"employee_id":1}`)
+	if got := store.records[0].Name; got != "новая" {
+		t.Errorf("name = %q, ожидали без пробелов по краям", got)
 	}
 }
 

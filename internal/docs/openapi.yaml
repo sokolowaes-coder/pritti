@@ -5,8 +5,13 @@ info:
   description: |
     Записи, клиенты и сотрудники. У записи обязательны клиент и сотрудник —
     создайте их сначала через `POST /clients` и `POST /employees`.
+
+    Если на сервере задан `API_KEY`, каждый запрос должен нести заголовок `X-API-Key`
+    (кнопка **Authorize**). Без ключа — `401`.
 servers:
   - url: /
+security:
+  - ApiKey: []
 tags:
   - name: Записи
   - name: Клиенты
@@ -55,6 +60,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/RecordList" }
         "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
         "500": { $ref: "#/components/responses/Internal" }
     post:
       tags: [Записи]
@@ -75,6 +81,7 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
         "500": { $ref: "#/components/responses/Internal" }
 
   /records/{id}:
@@ -91,6 +98,7 @@ paths:
               schema: { $ref: "#/components/schemas/Record" }
         "400": { $ref: "#/components/responses/BadRequest" }
         "404": { $ref: "#/components/responses/NotFound" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
         "500": { $ref: "#/components/responses/Internal" }
     put:
       tags: [Записи]
@@ -108,6 +116,7 @@ paths:
               schema: { $ref: "#/components/schemas/Record" }
         "400": { $ref: "#/components/responses/BadRequest" }
         "404": { $ref: "#/components/responses/NotFound" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
         "500": { $ref: "#/components/responses/Internal" }
     delete:
       tags: [Записи]
@@ -116,6 +125,7 @@ paths:
         "204": { description: Удалено }
         "400": { $ref: "#/components/responses/BadRequest" }
         "404": { $ref: "#/components/responses/NotFound" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
         "500": { $ref: "#/components/responses/Internal" }
 
   /clients:
@@ -128,6 +138,7 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ClientList" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
         "500": { $ref: "#/components/responses/Internal" }
     post:
       tags: [Клиенты]
@@ -141,6 +152,7 @@ paths:
               schema: { $ref: "#/components/schemas/Client" }
         "400": { $ref: "#/components/responses/BadRequest" }
         "409": { $ref: "#/components/responses/PhoneTaken" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
         "500": { $ref: "#/components/responses/Internal" }
 
   /clients/{id}:
@@ -159,6 +171,7 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/PhoneTaken" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
         "500": { $ref: "#/components/responses/Internal" }
     delete:
       tags: [Клиенты]
@@ -168,6 +181,7 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/HasRecords" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
         "500": { $ref: "#/components/responses/Internal" }
 
   /employees:
@@ -180,6 +194,7 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/PersonList" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
         "500": { $ref: "#/components/responses/Internal" }
     post:
       tags: [Сотрудники]
@@ -192,6 +207,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Person" }
         "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
         "500": { $ref: "#/components/responses/Internal" }
 
   /employees/{id}:
@@ -209,6 +225,7 @@ paths:
               schema: { $ref: "#/components/schemas/Person" }
         "400": { $ref: "#/components/responses/BadRequest" }
         "404": { $ref: "#/components/responses/NotFound" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
         "500": { $ref: "#/components/responses/Internal" }
     delete:
       tags: [Сотрудники]
@@ -218,12 +235,14 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/HasRecords" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
         "500": { $ref: "#/components/responses/Internal" }
 
   /healthz:
     get:
       tags: [Служебное]
       summary: Проверка, что сервер и БД живы
+      security: []
       responses:
         "200":
           description: Всё хорошо
@@ -236,6 +255,13 @@ paths:
         "503": { description: БД недоступна }
 
 components:
+  securitySchemes:
+    ApiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Нужен, если на сервере задан API_KEY. Иначе можно не заполнять.
+
   parameters:
     ID:
       name: id
@@ -252,7 +278,7 @@ components:
             type: object
             required: [full_name, phone]
             properties:
-              full_name: { type: string, example: Иванова Анна Сергеевна }
+              full_name: { type: string, maxLength: 200, example: Иванова Анна Сергеевна }
               phone:
                 type: string
                 description: |
@@ -267,11 +293,16 @@ components:
             type: object
             required: [name]
             properties:
-              name: { type: string, example: Мария Смирнова }
+              name: { type: string, maxLength: 200, example: Мария Смирнова }
 
   responses:
+    Unauthorized:
+      description: Нет заголовка X-API-Key или ключ неверный
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
     BadRequest:
-      description: Неверный id, JSON, фильтр или пустое имя
+      description: Неверный id, JSON, фильтр, неизвестное поле, пустое или слишком длинное значение
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
@@ -321,8 +352,8 @@ components:
       type: object
       required: [name, client_id, employee_id]
       properties:
-        name: { type: string, example: Чистка лица }
-        description: { type: string, default: "", example: кабинет 1 }
+        name: { type: string, maxLength: 200, example: Чистка лица }
+        description: { type: string, maxLength: 2000, default: "", example: кабинет 1 }
         client_id: { type: integer, format: int64, minimum: 1, example: 1 }
         employee_id: { type: integer, format: int64, minimum: 1, example: 1 }
 

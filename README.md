@@ -4,16 +4,22 @@
 
 ## Запуск
 
-Всё в Docker — база и API (http://localhost:8080):
+Всё в Docker — nginx, API и база (http://localhost:8080):
 
 ```sh
+echo "API_KEY=$(openssl rand -hex 32)" > .env   # один раз: ключ к API (.env в .gitignore)
 docker compose up -d --build   # собрать и запустить
 docker compose logs -f app     # логи сервера
 docker compose down            # остановить (данные БД сохраняются)
 docker compose down -v         # остановить и удалить данные
 ```
 
-Если порт 8080 занят: `APP_PORT=8081 docker compose up -d`.
+Снаружи доступен только nginx ([deploy/nginx/nginx.conf](deploy/nginx/nginx.conf)): он проксирует запросы
+в app, ограничивает частоту (20 запросов/с с одного IP, иначе `429`) и размер тела, скрывает версию
+и добавляет защитные заголовки. У app портов наружу нет, Postgres слушает только `127.0.0.1:5433`.
+Без `API_KEY` в `.env` API работает без авторизации.
+
+Если порт 8080 занят: `HTTP_PORT=8081 docker compose up -d`.
 
 Для разработки — только база в Docker, сервер через `go run`:
 
@@ -21,6 +27,8 @@ docker compose down -v         # остановить и удалить данн
 docker compose up -d db
 DATABASE_URL="postgres://app:app@localhost:5433/go_education?sslmode=disable" go run ./cmd/server
 ```
+
+Порт 8080 тогда должен быть свободен: если запущен весь compose, остановите его nginx (`docker compose stop nginx`).
 
 Переменные окружения сервера:
 
@@ -32,6 +40,7 @@ DATABASE_URL="postgres://app:app@localhost:5433/go_education?sslmode=disable" go
 | `LOG_FORMAT`   | текст        | `json` — логи в JSON                      |
 | `APP_TZ`       | системный    | часовой пояс для дат в фильтрах, напр. `Europe/Moscow` |
 | `DATABASE_URL_UNPOOLED` | —   | прямое подключение для миграций, если `DATABASE_URL` идёт через пулер |
+| `API_KEY`      | —            | если задан, все запросы, кроме `/healthz` и Swagger, требуют заголовок `X-API-Key` |
 
 По Ctrl+C / `docker stop` сервер дожидается текущих запросов и завершается корректно.
 
@@ -67,7 +76,10 @@ Swagger UI: [localhost:8080/swagger](http://localhost:8080/swagger) — все �
 Удалить клиента или сотрудника, на которого ссылаются записи, тоже нельзя — `409`.
 Список: `{"success": true, "count": N, "data": [...]}`.
 
-Ошибки: `400` — неверный id, JSON, фильтр, пустое имя, нет `client_id`/`employee_id` или такого клиента/сотрудника нет; `404` — записи (клиента, сотрудника) нет; `500` — ошибка сервера.
+Ошибки: `400` — неверный id, JSON, фильтр, неизвестное поле в теле, пустое или слишком длинное значение
+(имена — до 200 символов, `description` — до 2000), нет `client_id`/`employee_id` или такого клиента/сотрудника нет;
+`401` — нет верного `X-API-Key` (если задан `API_KEY`); `404` — записи (клиента, сотрудника) нет;
+`409` — конфликт (занятый телефон, удаление клиента/сотрудника с записями); `413` — тело больше 1 МБ; `500` — ошибка сервера.
 Тело ошибки всегда JSON: `{"success": false, "error": "запись не найдена"}`.
 
 ### Список: фильтры и пагинация
@@ -117,8 +129,10 @@ curl 'localhost:8080/records?fullText=лазер&dateStart=2026-09-27&dateEnd=20
 
 Примеры:
 
+С включённым `API_KEY` добавьте к каждому запросу `-H "X-API-Key: $API_KEY"`.
+
 ```sh
-curl -i -X POST localhost:8080/clients -d '{"name":"Анна"}'
+curl -i -X POST localhost:8080/clients -d '{"full_name":"Анна Иванова","phone":"89161234567"}'
 curl -i -X POST localhost:8080/employees -d '{"name":"Мария"}'
 curl -i -X POST localhost:8080/records -d '{"name":"первая","client_id":1,"employee_id":1}'
 curl -i localhost:8080/records
@@ -135,7 +149,8 @@ Vercel сам распознаёт Go-сервер ([cmd/server](cmd/server/main
 1. [vercel.com/new](https://vercel.com/new) → импортировать репозиторий, настройки по умолчанию.
 2. В проекте: **Storage → Create Database → Neon** (Postgres) → подключить к проекту.
    Vercel сам добавит `DATABASE_URL` и `DATABASE_URL_UNPOOLED`.
-3. **Settings → Environment Variables**: `APP_TZ` = `Europe/Moscow`.
+3. **Settings → Environment Variables**: `APP_TZ` = `Europe/Moscow`, `API_KEY` = длинная случайная строка
+   (`openssl rand -hex 32`) — без него API в интернете открыт всем.
 4. **Deployments → Redeploy**. Миграции применятся при старте.
 
 Дальше каждый push в `main` деплоится автоматически.
@@ -194,11 +209,12 @@ internal/records/
   handler.go         HTTP-хендлеры и роуты
 internal/clients/    клиенты: модель, SQL, хендлеры (так же устроен internal/employees/)
 internal/employees/  сотрудники
-internal/docs/        openapi.yaml и страница Swagger UI (/swagger)
+internal/docs/       openapi.yaml и страница Swagger UI (/swagger)
 internal/httpx/      общие хелперы хендлеров: JSON-ответы, ошибки, разбор id и тела
 internal/testdb/     временная схема в Postgres для тестов хранилищ
 migrations/          SQL-миграции + код их применения
 Dockerfile           сборка образа сервера (multi-stage, ~12 МБ)
-docker-compose.yml   PostgreSQL (порт 5433) + сервер (порт 8080)
+docker-compose.yml   nginx (порт 8080) → app → PostgreSQL (127.0.0.1:5433)
+deploy/nginx/        конфиг nginx
 .github/workflows/   CI
 ```

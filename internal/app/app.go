@@ -22,11 +22,18 @@ import (
 type Config struct {
 	DatabaseURL   string
 	MigrationsURL string
+	APIKey        string // пусто — API без авторизации
 	Location      *time.Location
 	Logger        *slog.Logger
 }
 
-// ConfigFromEnv читает DATABASE_URL, DATABASE_URL_UNPOOLED и APP_TZ.
+// requestTimeout — сколько максимум обрабатывается один запрос, включая запросы к БД.
+const requestTimeout = 10 * time.Second
+
+// publicPaths доступны без API-ключа: проверка здоровья и документация.
+var publicPaths = []string{"/healthz", "/swagger", "/openapi.yaml"}
+
+// ConfigFromEnv читает DATABASE_URL, DATABASE_URL_UNPOOLED, API_KEY и APP_TZ.
 func ConfigFromEnv(logger *slog.Logger) (Config, error) {
 	loc := time.Local
 	if tz := os.Getenv("APP_TZ"); tz != "" {
@@ -38,6 +45,7 @@ func ConfigFromEnv(logger *slog.Logger) (Config, error) {
 	return Config{
 		DatabaseURL:   os.Getenv("DATABASE_URL"),
 		MigrationsURL: os.Getenv("DATABASE_URL_UNPOOLED"),
+		APIKey:        os.Getenv("API_KEY"),
 		Location:      loc,
 		Logger:        logger,
 	}, nil
@@ -57,6 +65,9 @@ func New(ctx context.Context, cfg Config) (h http.Handler, close func(), err err
 		return nil, nil, err
 	}
 	cfg.Logger.Info("миграции применены", "tz", cfg.Location.String())
+	if cfg.APIKey == "" {
+		cfg.Logger.Warn("API_KEY не задан — API доступен без авторизации")
+	}
 
 	db, err := pgxpool.New(ctx, cfg.DatabaseURL)
 	if err != nil {
@@ -77,6 +88,8 @@ func New(ctx context.Context, cfg Config) (h http.Handler, close func(), err err
 	h = middleware.Chain(mux,
 		middleware.Logging(cfg.Logger),
 		middleware.Recover(cfg.Logger),
+		middleware.APIKey(cfg.APIKey, publicPaths...),
+		middleware.Timeout(requestTimeout),
 	)
 	return h, db.Close, nil
 }

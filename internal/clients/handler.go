@@ -9,6 +9,8 @@ import (
 	"go-education/internal/httpx"
 )
 
+const maxFullNameLen = 200
+
 type ClientStore interface {
 	List(ctx context.Context) ([]Client, error)
 	Create(ctx context.Context, in ClientInput) (Client, error)
@@ -107,9 +109,8 @@ func decodeInput(w http.ResponseWriter, r *http.Request) (ClientInput, bool) {
 	if !httpx.DecodeJSON(w, r, &in) {
 		return ClientInput{}, false
 	}
-	in.FullName = strings.TrimSpace(in.FullName)
-	if in.FullName == "" {
-		httpx.WriteError(w, http.StatusBadRequest, "full_name обязателен")
+	if msg := httpx.CheckText("full_name", &in.FullName, true, maxFullNameLen); msg != "" {
+		httpx.WriteError(w, http.StatusBadRequest, msg)
 		return ClientInput{}, false
 	}
 	if strings.TrimSpace(in.Phone) == "" {
