@@ -16,11 +16,15 @@ type Pinger interface {
 	Ping(ctx context.Context) error
 }
 
-// Handler отвечает 200 {"status":"ok"}, если БД отвечает за 2 секунды,
+// pingTimeout — сколько ждать ответа БД. С запасом: бесплатная база Neon засыпает
+// без нагрузки и первые секунды после пробуждения отвечает медленно.
+const pingTimeout = 5 * time.Second
+
+// Handler отвечает 200 {"status":"ok"}, если БД отвечает за pingTimeout,
 // иначе 503 {"status":"unavailable"}.
 func Handler(db Pinger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+		ctx, cancel := context.WithTimeout(r.Context(), pingTimeout)
 		defer cancel()
 
 		status, body := http.StatusOK, "ok"
@@ -38,7 +42,7 @@ func Handler(db Pinger) http.HandlerFunc {
 // Check делает GET на /healthz и возвращает nil при ответе 200.
 // Используется командой `server healthcheck` в Docker: в образе нет curl.
 func Check(url string) error {
-	client := http.Client{Timeout: 3 * time.Second}
+	client := http.Client{Timeout: pingTimeout + 2*time.Second} // дольше, чем сам /healthz ждёт БД
 	resp, err := client.Get(url)
 	if err != nil {
 		return err
