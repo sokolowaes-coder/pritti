@@ -10,6 +10,9 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"go-education/internal/clients"
+	"go-education/internal/docs"
+	"go-education/internal/employees"
 	"go-education/internal/health"
 	"go-education/internal/middleware"
 	"go-education/internal/records"
@@ -66,7 +69,10 @@ func New(ctx context.Context, cfg Config) (h http.Handler, close func(), err err
 
 	mux := http.NewServeMux()
 	records.NewHandler(records.NewStorage(db), cfg.Location).Register(mux)
+	clients.NewHandler(clients.NewStorage(db)).Register(mux)
+	employees.NewHandler(employees.NewStorage(db)).Register(mux)
 	mux.HandleFunc("GET /healthz", health.Handler(db))
+	docs.Register(mux)
 
 	h = middleware.Chain(mux,
 		middleware.Logging(cfg.Logger),

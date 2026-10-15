@@ -7,10 +7,17 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-var ErrNotFound = errors.New("запись не найдена")
+var (
+	ErrNotFound         = errors.New("запись не найдена")
+	ErrClientNotFound   = errors.New("клиент не найден")
+	ErrEmployeeNotFound = errors.New("сотрудник не найден")
+)
+
+const recordColumns = `id, name, description, client_id, employee_id, created_at`
 
 type Storage struct {
 	db *pgxpool.Pool
@@ -31,7 +38,7 @@ func (s *Storage) List(ctx context.Context, f ListFilter) ([]Record, int, error)
 
 	args = append(args, f.Limit, f.Offset)
 	rows, err := s.db.Query(ctx,
-		`SELECT id, name, description, created_at FROM records`+where+
+		`SELECT `+recordColumns+` FROM records`+where+
 			fmt.Sprintf(` ORDER BY id LIMIT $%d OFFSET $%d`, len(args)-1, len(args)),
 		args...,
 	)
@@ -91,12 +98,17 @@ func escapeLike(s string) string {
 	return strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(s)
 }
 
-func (s *Storage) GetByID(ctx context.Context, id int64) (Record, error) {
+func scanRecord(row pgx.Row) (Record, error) {
 	var rec Record
-	err := s.db.QueryRow(ctx,
-		`SELECT id, name, description, created_at FROM records WHERE id = $1`,
+	err := row.Scan(&rec.ID, &rec.Name, &rec.Description, &rec.ClientID, &rec.EmployeeID, &rec.CreatedAt)
+	return rec, err
+}
+
+func (s *Storage) GetByID(ctx context.Context, id int64) (Record, error) {
+	rec, err := scanRecord(s.db.QueryRow(ctx,
+		`SELECT `+recordColumns+` FROM records WHERE id = $1`,
 		id,
-	).Scan(&rec.ID, &rec.Name, &rec.Description, &rec.CreatedAt)
+	))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Record{}, ErrNotFound
 	}
@@ -104,26 +116,39 @@ func (s *Storage) GetByID(ctx context.Context, id int64) (Record, error) {
 }
 
 func (s *Storage) Create(ctx context.Context, in RecordInput) (Record, error) {
-	var rec Record
-	err := s.db.QueryRow(ctx,
-		`INSERT INTO records (name, description) VALUES ($1, $2)
-		 RETURNING id, name, description, created_at`,
-		in.Name, in.Description,
-	).Scan(&rec.ID, &rec.Name, &rec.Description, &rec.CreatedAt)
-	return rec, err
+	rec, err := scanRecord(s.db.QueryRow(ctx,
+		`INSERT INTO records (name, description, client_id, employee_id) VALUES ($1, $2, $3, $4)
+		 RETURNING `+recordColumns,
+		in.Name, in.Description, in.ClientID, in.EmployeeID,
+	))
+	return rec, foreignKeyError(err)
 }
 
 func (s *Storage) Update(ctx context.Context, id int64, in RecordInput) (Record, error) {
-	var rec Record
-	err := s.db.QueryRow(ctx,
-		`UPDATE records SET name = $2, description = $3 WHERE id = $1
-		 RETURNING id, name, description, created_at`,
-		id, in.Name, in.Description,
-	).Scan(&rec.ID, &rec.Name, &rec.Description, &rec.CreatedAt)
+	rec, err := scanRecord(s.db.QueryRow(ctx,
+		`UPDATE records SET name = $2, description = $3, client_id = $4, employee_id = $5 WHERE id = $1
+		 RETURNING `+recordColumns,
+		id, in.Name, in.Description, in.ClientID, in.EmployeeID,
+	))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Record{}, ErrNotFound
 	}
-	return rec, err
+	return rec, foreignKeyError(err)
+}
+
+// foreignKeyError превращает нарушение внешнего ключа (код 23503)
+// в понятную ошибку: какого именно клиента или сотрудника нет.
+func foreignKeyError(err error) error {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "23503" {
+		switch pgErr.ConstraintName {
+		case "records_client_id_fkey":
+			return ErrClientNotFound
+		case "records_employee_id_fkey":
+			return ErrEmployeeNotFound
+		}
+	}
+	return err
 }
 
 func (s *Storage) Delete(ctx context.Context, id int64) error {

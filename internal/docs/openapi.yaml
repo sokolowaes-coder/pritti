@@ -1,0 +1,401 @@
+openapi: 3.0.3
+info:
+  title: GO-education API
+  version: 1.0.0
+  description: |
+    Записи, клиенты и сотрудники. У записи обязательны клиент и сотрудник —
+    создайте их сначала через `POST /clients` и `POST /employees`.
+servers:
+  - url: /
+tags:
+  - name: Записи
+  - name: Клиенты
+  - name: Сотрудники
+  - name: Служебное
+
+paths:
+  /records:
+    get:
+      tags: [Записи]
+      summary: Список записей с фильтрами и пагинацией
+      parameters:
+        - name: fullText
+          in: query
+          description: Поиск подстроки без учёта регистра
+          schema: { type: string }
+          example: лазер
+        - name: fullTextFields
+          in: query
+          description: Где искать, через запятую. По умолчанию — во всех полях.
+          schema: { type: string }
+          example: name,description
+        - name: id
+          in: query
+          description: Список id через запятую
+          schema: { type: string }
+          example: 1,2,3
+        - name: dateStart
+          in: query
+          description: created_at не раньше. `2026-09-27` или `2026-09-27T10:00:00`, пояс сервера.
+          schema: { type: string }
+        - name: dateEnd
+          in: query
+          description: created_at не позже. Дата без времени — до конца дня.
+          schema: { type: string }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+        - name: offset
+          in: query
+          schema: { type: integer, minimum: 0, default: 0 }
+      responses:
+        "200":
+          description: Страница записей
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RecordList" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "500": { $ref: "#/components/responses/Internal" }
+    post:
+      tags: [Записи]
+      summary: Создать запись
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RecordInput" }
+      responses:
+        "201":
+          description: Созданная запись
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Record" }
+        "400":
+          description: Неверный JSON, пустое имя, нет client_id/employee_id или такого клиента/сотрудника нет
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "500": { $ref: "#/components/responses/Internal" }
+
+  /records/{id}:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+    get:
+      tags: [Записи]
+      summary: Запись по id
+      responses:
+        "200":
+          description: Запись
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Record" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/Internal" }
+    put:
+      tags: [Записи]
+      summary: Изменить запись (заменяет все поля)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RecordInput" }
+      responses:
+        "200":
+          description: Изменённая запись
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Record" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/Internal" }
+    delete:
+      tags: [Записи]
+      summary: Удалить запись
+      responses:
+        "204": { description: Удалено }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/Internal" }
+
+  /clients:
+    get:
+      tags: [Клиенты]
+      summary: Список клиентов
+      responses:
+        "200":
+          description: Все клиенты
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ClientList" }
+        "500": { $ref: "#/components/responses/Internal" }
+    post:
+      tags: [Клиенты]
+      summary: Создать клиента
+      requestBody: { $ref: "#/components/requestBodies/Client" }
+      responses:
+        "201":
+          description: Созданный клиент
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Client" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "409": { $ref: "#/components/responses/PhoneTaken" }
+        "500": { $ref: "#/components/responses/Internal" }
+
+  /clients/{id}:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+    put:
+      tags: [Клиенты]
+      summary: Изменить клиента
+      requestBody: { $ref: "#/components/requestBodies/Client" }
+      responses:
+        "200":
+          description: Изменённый клиент
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Client" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/PhoneTaken" }
+        "500": { $ref: "#/components/responses/Internal" }
+    delete:
+      tags: [Клиенты]
+      summary: Удалить клиента
+      responses:
+        "204": { description: Удалено }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/HasRecords" }
+        "500": { $ref: "#/components/responses/Internal" }
+
+  /employees:
+    get:
+      tags: [Сотрудники]
+      summary: Список сотрудников
+      responses:
+        "200":
+          description: Все сотрудники
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PersonList" }
+        "500": { $ref: "#/components/responses/Internal" }
+    post:
+      tags: [Сотрудники]
+      summary: Создать сотрудника
+      requestBody: { $ref: "#/components/requestBodies/Person" }
+      responses:
+        "201":
+          description: Созданный сотрудник
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Person" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "500": { $ref: "#/components/responses/Internal" }
+
+  /employees/{id}:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+    put:
+      tags: [Сотрудники]
+      summary: Изменить сотрудника
+      requestBody: { $ref: "#/components/requestBodies/Person" }
+      responses:
+        "200":
+          description: Изменённый сотрудник
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Person" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/Internal" }
+    delete:
+      tags: [Сотрудники]
+      summary: Удалить сотрудника
+      responses:
+        "204": { description: Удалено }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/HasRecords" }
+        "500": { $ref: "#/components/responses/Internal" }
+
+  /healthz:
+    get:
+      tags: [Служебное]
+      summary: Проверка, что сервер и БД живы
+      responses:
+        "200":
+          description: Всё хорошо
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: ok }
+        "503": { description: БД недоступна }
+
+components:
+  parameters:
+    ID:
+      name: id
+      in: path
+      required: true
+      schema: { type: integer, format: int64, minimum: 1 }
+
+  requestBodies:
+    Client:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [full_name, phone]
+            properties:
+              full_name: { type: string, example: Иванова Анна Сергеевна }
+              phone:
+                type: string
+                description: |
+                  Российский номер в любом привычном виде: `+79161234567`, `8 (916) 123-45-67`,
+                  `+7 916 123-45-67`, `9161234567`. Сохраняется как `+79161234567`.
+                example: 8 (916) 123-45-67
+    Person:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [name]
+            properties:
+              name: { type: string, example: Мария Смирнова }
+
+  responses:
+    BadRequest:
+      description: Неверный id, JSON, фильтр или пустое имя
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    NotFound:
+      description: Не найдено
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    PhoneTaken:
+      description: Клиент с таким телефоном уже есть
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    HasRecords:
+      description: На него ссылаются записи — сначала удалите или переназначьте их
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Internal:
+      description: Ошибка сервера
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+
+  schemas:
+    Record:
+      type: object
+      properties:
+        id: { type: integer, format: int64, example: 1 }
+        name: { type: string, example: Чистка лица }
+        description: { type: string, example: кабинет 1 }
+        client_id:
+          type: integer
+          format: int64
+          nullable: true
+          description: null только у записей, созданных до появления клиентов
+          example: 1
+        employee_id:
+          type: integer
+          format: int64
+          nullable: true
+          description: null только у записей, созданных до появления сотрудников
+          example: 1
+        created_at: { type: string, format: date-time }
+
+    RecordInput:
+      type: object
+      required: [name, client_id, employee_id]
+      properties:
+        name: { type: string, example: Чистка лица }
+        description: { type: string, default: "", example: кабинет 1 }
+        client_id: { type: integer, format: int64, minimum: 1, example: 1 }
+        employee_id: { type: integer, format: int64, minimum: 1, example: 1 }
+
+    RecordList:
+      type: object
+      properties:
+        success: { type: boolean, example: true }
+        filters:
+          type: object
+          description: Применённые фильтры; не заданные — null
+          properties:
+            fullText:
+              type: object
+              properties:
+                value: { type: string, nullable: true }
+                fields: { type: array, nullable: true, items: { type: string } }
+            id:
+              type: object
+              properties:
+                value: { type: array, nullable: true, items: { type: integer, format: int64 } }
+            dateStart:
+              type: object
+              properties:
+                value: { type: string, nullable: true, example: "2026-09-27T00:00:00" }
+            dateEnd:
+              type: object
+              properties:
+                value: { type: string, nullable: true, example: "2026-09-27T23:59:59" }
+        count: { type: integer, description: "Всего подходящих записей, без учёта пагинации" }
+        pagination:
+          type: object
+          properties:
+            limit: { type: integer, example: 20 }
+            offset: { type: integer, example: 0 }
+        data:
+          type: array
+          items: { $ref: "#/components/schemas/Record" }
+
+    Client:
+      type: object
+      properties:
+        id: { type: integer, format: int64, example: 1 }
+        full_name: { type: string, example: Иванова Анна Сергеевна }
+        phone: { type: string, example: "+79161234567" }
+        created_at: { type: string, format: date-time }
+
+    ClientList:
+      type: object
+      properties:
+        success: { type: boolean, example: true }
+        count: { type: integer, example: 1 }
+        data:
+          type: array
+          items: { $ref: "#/components/schemas/Client" }
+
+    Person:
+      type: object
+      properties:
+        id: { type: integer, format: int64, example: 1 }
+        name: { type: string, example: Мария Смирнова }
+        created_at: { type: string, format: date-time }
+
+    PersonList:
+      type: object
+      properties:
+        success: { type: boolean, example: true }
+        count: { type: integer, example: 1 }
+        data:
+          type: array
+          items: { $ref: "#/components/schemas/Person" }
+
+    Error:
+      type: object
+      properties:
+        success: { type: boolean, example: false }
+        error: { type: string, example: запись не найдена }

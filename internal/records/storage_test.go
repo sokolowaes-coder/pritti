@@ -4,60 +4,29 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/url"
-	"os"
+	"reflect"
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-
-	"go-education/migrations"
+	"go-education/internal/testdb"
 )
 
-// newTestStorage подключается к TEST_DATABASE_URL, создаёт отдельную
-// временную схему и применяет в ней все миграции, чтобы не трогать настоящие данные.
-// Без TEST_DATABASE_URL тест пропускается.
 func newTestStorage(t *testing.T) *Storage {
+	return NewStorage(testdb.New(t))
+}
+
+// newRefs создаёт клиента и сотрудника, без которых нельзя создать запись.
+// Прямым SQL, чтобы тесты записей не зависели от пакетов clients и employees.
+func newRefs(t *testing.T, s *Storage) (clientID, employeeID int64) {
 	t.Helper()
-	dsn := os.Getenv("TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("TEST_DATABASE_URL не задан — пропускаю тесты с БД")
-	}
 	ctx := context.Background()
-
-	schema := fmt.Sprintf("test_%d", time.Now().UnixNano())
-	admin, err := pgxpool.New(ctx, dsn)
-	if err != nil {
+	if err := s.db.QueryRow(ctx, `INSERT INTO clients (full_name, phone) VALUES ('клиент', '+79161234567') RETURNING id`).Scan(&clientID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := admin.Exec(ctx, "CREATE SCHEMA "+schema); err != nil {
+	if err := s.db.QueryRow(ctx, `INSERT INTO employees (name) VALUES ('сотрудник') RETURNING id`).Scan(&employeeID); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() {
-		admin.Exec(context.Background(), "DROP SCHEMA "+schema+" CASCADE")
-		admin.Close()
-	})
-
-	// search_path в URL: и миграции, и запросы работают только внутри временной схемы.
-	u, err := url.Parse(dsn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	q := u.Query()
-	q.Set("search_path", schema)
-	u.RawQuery = q.Encode()
-	schemaDSN := u.String()
-
-	if err := migrations.Up(schemaDSN); err != nil {
-		t.Fatal(err)
-	}
-
-	db, err := pgxpool.New(ctx, schemaDSN)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(db.Close)
-	return NewStorage(db)
+	return clientID, employeeID
 }
 
 func TestStorageCRUD(t *testing.T) {
@@ -69,20 +38,22 @@ func TestStorageCRUD(t *testing.T) {
 		t.Fatalf("пустой список: %v, %d, %v", list, total, err)
 	}
 
-	created, err := s.Create(ctx, RecordInput{Name: "первая", Description: "описание"})
+	clientID, employeeID := newRefs(t, s)
+	created, err := s.Create(ctx, RecordInput{Name: "первая", Description: "описание", ClientID: clientID, EmployeeID: employeeID})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if created.ID == 0 || created.Name != "первая" || created.Description != "описание" || created.CreatedAt.IsZero() {
+	if created.ID == 0 || created.Name != "первая" || created.Description != "описание" || created.CreatedAt.IsZero() ||
+		created.ClientID == nil || *created.ClientID != clientID || created.EmployeeID == nil || *created.EmployeeID != employeeID {
 		t.Errorf("Create вернул %+v", created)
 	}
 
 	got, err := s.GetByID(ctx, created.ID)
-	if err != nil || got != created {
+	if err != nil || !reflect.DeepEqual(got, created) {
 		t.Errorf("GetByID: %+v, %v", got, err)
 	}
 
-	updated, err := s.Update(ctx, created.ID, RecordInput{Name: "изменённая"})
+	updated, err := s.Update(ctx, created.ID, RecordInput{Name: "изменённая", ClientID: clientID, EmployeeID: employeeID})
 	if err != nil || updated.Name != "изменённая" || updated.Description != "" || updated.ID != created.ID {
 		t.Errorf("Update: %+v, %v", updated, err)
 	}
@@ -103,7 +74,8 @@ func TestStorageNotFound(t *testing.T) {
 	if _, err := s.GetByID(ctx, 999); !errors.Is(err, ErrNotFound) {
 		t.Errorf("GetByID: %v, ожидали ErrNotFound", err)
 	}
-	if _, err := s.Update(ctx, 999, RecordInput{Name: "x"}); !errors.Is(err, ErrNotFound) {
+	clientID, employeeID := newRefs(t, s)
+	if _, err := s.Update(ctx, 999, RecordInput{Name: "x", ClientID: clientID, EmployeeID: employeeID}); !errors.Is(err, ErrNotFound) {
 		t.Errorf("Update: %v, ожидали ErrNotFound", err)
 	}
 	if err := s.Delete(ctx, 999); !errors.Is(err, ErrNotFound) {
@@ -113,14 +85,38 @@ func TestStorageNotFound(t *testing.T) {
 
 func TestStorageRejectsBlankName(t *testing.T) {
 	s := newTestStorage(t)
-	if _, err := s.Create(context.Background(), RecordInput{Name: "   "}); err == nil {
+	ctx := context.Background()
+	clientID, employeeID := newRefs(t, s)
+	if _, err := s.Create(ctx, RecordInput{Name: "   ", ClientID: clientID, EmployeeID: employeeID}); err == nil {
 		t.Error("БД приняла пустое имя, ожидали ошибку CHECK")
+	}
+}
+
+func TestStorageUnknownClientOrEmployee(t *testing.T) {
+	s := newTestStorage(t)
+	ctx := context.Background()
+	clientID, employeeID := newRefs(t, s)
+
+	if _, err := s.Create(ctx, RecordInput{Name: "x", ClientID: 999, EmployeeID: employeeID}); !errors.Is(err, ErrClientNotFound) {
+		t.Errorf("Create: %v, ожидали ErrClientNotFound", err)
+	}
+	if _, err := s.Create(ctx, RecordInput{Name: "x", ClientID: clientID, EmployeeID: 999}); !errors.Is(err, ErrEmployeeNotFound) {
+		t.Errorf("Create: %v, ожидали ErrEmployeeNotFound", err)
+	}
+
+	rec, err := s.Create(ctx, RecordInput{Name: "x", ClientID: clientID, EmployeeID: employeeID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Update(ctx, rec.ID, RecordInput{Name: "x", ClientID: 999, EmployeeID: employeeID}); !errors.Is(err, ErrClientNotFound) {
+		t.Errorf("Update: %v, ожидали ErrClientNotFound", err)
 	}
 }
 
 func TestStorageListFilters(t *testing.T) {
 	s := newTestStorage(t)
 	ctx := context.Background()
+	clientID, employeeID := newRefs(t, s)
 
 	for _, in := range []RecordInput{
 		{Name: "Лазерная депиляция", Description: "кабинет 1"},
@@ -129,6 +125,7 @@ func TestStorageListFilters(t *testing.T) {
 		{Name: "Массаж_спины"},
 		{Name: "Пилинг"},
 	} {
+		in.ClientID, in.EmployeeID = clientID, employeeID
 		if _, err := s.Create(ctx, in); err != nil {
 			t.Fatal(err)
 		}

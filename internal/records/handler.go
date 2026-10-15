@@ -2,13 +2,12 @@ package records
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"log/slog"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
+
+	"go-education/internal/httpx"
 )
 
 type RecordStore interface {
@@ -33,32 +32,32 @@ func NewHandler(storage RecordStore, loc *time.Location) *Handler {
 func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	f, err := ParseListFilter(r.URL.Query(), h.loc)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		httpx.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	records, total, err := h.storage.List(r.Context(), f)
 	if err != nil {
-		internalError(w, "list records", err)
+		httpx.InternalError(w, "list records", err)
 		return
 	}
-	writeJSON(w, http.StatusOK, newListResponse(f, records, total, h.loc))
+	httpx.WriteJSON(w, http.StatusOK, newListResponse(f, records, total, h.loc))
 }
 
 func (h *Handler) GetByID(w http.ResponseWriter, r *http.Request) {
-	id, ok := parseID(w, r)
+	id, ok := httpx.ParseID(w, r)
 	if !ok {
 		return
 	}
 	rec, err := h.storage.GetByID(r.Context(), id)
 	if errors.Is(err, ErrNotFound) {
-		writeError(w, http.StatusNotFound, "запись не найдена")
+		httpx.WriteError(w, http.StatusNotFound, "запись не найдена")
 		return
 	}
 	if err != nil {
-		internalError(w, "get record", err)
+		httpx.InternalError(w, "get record", err)
 		return
 	}
-	writeJSON(w, http.StatusOK, rec)
+	httpx.WriteJSON(w, http.StatusOK, rec)
 }
 
 func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
@@ -67,15 +66,19 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rec, err := h.storage.Create(r.Context(), in)
-	if err != nil {
-		internalError(w, "create record", err)
+	if errors.Is(err, ErrClientNotFound) || errors.Is(err, ErrEmployeeNotFound) {
+		httpx.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusCreated, rec)
+	if err != nil {
+		httpx.InternalError(w, "create record", err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusCreated, rec)
 }
 
 func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
-	id, ok := parseID(w, r)
+	id, ok := httpx.ParseID(w, r)
 	if !ok {
 		return
 	}
@@ -85,28 +88,32 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 	rec, err := h.storage.Update(r.Context(), id, in)
 	if errors.Is(err, ErrNotFound) {
-		writeError(w, http.StatusNotFound, "запись не найдена")
+		httpx.WriteError(w, http.StatusNotFound, "запись не найдена")
+		return
+	}
+	if errors.Is(err, ErrClientNotFound) || errors.Is(err, ErrEmployeeNotFound) {
+		httpx.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	if err != nil {
-		internalError(w, "update record", err)
+		httpx.InternalError(w, "update record", err)
 		return
 	}
-	writeJSON(w, http.StatusOK, rec)
+	httpx.WriteJSON(w, http.StatusOK, rec)
 }
 
 func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
-	id, ok := parseID(w, r)
+	id, ok := httpx.ParseID(w, r)
 	if !ok {
 		return
 	}
 	err := h.storage.Delete(r.Context(), id)
 	if errors.Is(err, ErrNotFound) {
-		writeError(w, http.StatusNotFound, "запись не найдена")
+		httpx.WriteError(w, http.StatusNotFound, "запись не найдена")
 		return
 	}
 	if err != nil {
-		internalError(w, "delete record", err)
+		httpx.InternalError(w, "delete record", err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -120,41 +127,23 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /records/{id}", h.Delete)
 }
 
-func parseID(w http.ResponseWriter, r *http.Request) (int64, bool) {
-	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
-	if err != nil || id <= 0 {
-		writeError(w, http.StatusBadRequest, "неверный id")
-		return 0, false
-	}
-	return id, true
-}
-
 func decodeInput(w http.ResponseWriter, r *http.Request) (RecordInput, bool) {
-	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	var in RecordInput
-	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
-		writeError(w, http.StatusBadRequest, "неверный JSON")
+	if !httpx.DecodeJSON(w, r, &in) {
 		return RecordInput{}, false
 	}
-	if strings.TrimSpace(in.Name) == "" {
-		writeError(w, http.StatusBadRequest, "name обязателен")
+	var msg string
+	switch {
+	case strings.TrimSpace(in.Name) == "":
+		msg = "name обязателен"
+	case in.ClientID <= 0:
+		msg = "client_id обязателен"
+	case in.EmployeeID <= 0:
+		msg = "employee_id обязателен"
+	}
+	if msg != "" {
+		httpx.WriteError(w, http.StatusBadRequest, msg)
 		return RecordInput{}, false
 	}
 	return in, true
-}
-
-func writeJSON(w http.ResponseWriter, status int, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(v)
-}
-
-func internalError(w http.ResponseWriter, op string, err error) {
-	slog.Error(op, "error", err)
-	writeError(w, http.StatusInternalServerError, "внутренняя ошибка")
-}
-
-// writeError отвечает в едином формате ошибок: {"success": false, "error": "..."}.
-func writeError(w http.ResponseWriter, status int, msg string) {
-	writeJSON(w, status, map[string]any{"success": false, "error": msg})
 }

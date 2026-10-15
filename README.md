@@ -37,18 +37,37 @@ DATABASE_URL="postgres://app:app@localhost:5433/go_education?sslmode=disable" go
 
 ## API
 
+Swagger UI: [localhost:8080/swagger](http://localhost:8080/swagger) — все методы, схемы и кнопка «Try it out».
+Описание лежит в [internal/docs/openapi.yaml](internal/docs/openapi.yaml): при изменении API обновляйте и его.
+
 | Метод    | Путь            | Тело               | Ответ                        |
 |----------|-----------------|--------------------|------------------------------|
 | `GET`    | `/records`      | —                  | `200` список с фильтрами (см. ниже) |
-| `POST`   | `/records`      | `{"name":"...", "description":"..."}` | `201` созданная запись |
+| `POST`   | `/records`      | `{"name":"...", "description":"...", "client_id":1, "employee_id":1}` | `201` созданная запись |
 | `GET`    | `/records/{id}` | —                  | `200` запись                 |
-| `PUT`    | `/records/{id}` | `{"name":"...", "description":"..."}` | `200` обновлённая запись |
+| `PUT`    | `/records/{id}` | `{"name":"...", "description":"...", "client_id":1, "employee_id":1}` | `200` обновлённая запись |
 | `DELETE` | `/records/{id}` | —                  | `204` без тела               |
 | `GET`    | `/healthz`      | —                  | `200` `{"status":"ok"}` / `503`, если БД недоступна |
 
-`name` обязателен, `description` — нет (по умолчанию пустая строка). `PUT` заменяет оба поля.
+У записи `name`, `client_id` и `employee_id` обязательны, `description` — нет (по умолчанию пустая строка).
+`PUT` заменяет все поля. Клиент и сотрудник должны существовать — сначала создайте их через
+`POST /clients` и `POST /employees`. У записей, созданных до появления клиентов, `client_id` и `employee_id` равны `null`.
 
-Ошибки: `400` — неверный id, JSON, фильтр или пустое имя; `404` — записи нет; `500` — ошибка сервера.
+### Клиенты и сотрудники
+
+Два независимых ресурса с одинаковым набором методов: `GET` (список), `POST`, `PUT /{id}`, `DELETE /{id}`.
+
+| Ресурс       | Тело                                            | Обязательно           |
+|--------------|-------------------------------------------------|-----------------------|
+| `/clients`   | `{"full_name":"Иванова Анна","phone":"8 (916) 123-45-67"}` | `full_name`, `phone` |
+| `/employees` | `{"name":"Мария Смирнова"}`                     | `name`                |
+
+Телефон клиента принимается в любом привычном виде (`+7…`, `8…`, со скобками, пробелами и дефисами)
+и сохраняется как `+79161234567`. Два клиента с одним телефоном — `409`.
+Удалить клиента или сотрудника, на которого ссылаются записи, тоже нельзя — `409`.
+Список: `{"success": true, "count": N, "data": [...]}`.
+
+Ошибки: `400` — неверный id, JSON, фильтр, пустое имя, нет `client_id`/`employee_id` или такого клиента/сотрудника нет; `404` — записи (клиента, сотрудника) нет; `500` — ошибка сервера.
 Тело ошибки всегда JSON: `{"success": false, "error": "запись не найдена"}`.
 
 ### Список: фильтры и пагинация
@@ -93,16 +112,18 @@ curl 'localhost:8080/records?fullText=лазер&dateStart=2026-09-27&dateEnd=20
 Запись:
 
 ```json
-{"id": 1, "name": "первая", "description": "", "created_at": "2026-09-26T23:33:25.360074+03:00"}
+{"id": 1, "name": "первая", "description": "", "client_id": 1, "employee_id": 1, "created_at": "2026-09-26T23:33:25.360074+03:00"}
 ```
 
 Примеры:
 
 ```sh
-curl -i -X POST localhost:8080/records -d '{"name":"первая"}'
+curl -i -X POST localhost:8080/clients -d '{"name":"Анна"}'
+curl -i -X POST localhost:8080/employees -d '{"name":"Мария"}'
+curl -i -X POST localhost:8080/records -d '{"name":"первая","client_id":1,"employee_id":1}'
 curl -i localhost:8080/records
 curl -i localhost:8080/records/1
-curl -i -X PUT localhost:8080/records/1 -d '{"name":"изменённая"}'
+curl -i -X PUT localhost:8080/records/1 -d '{"name":"изменённая","client_id":1,"employee_id":1}'
 curl -i -X DELETE localhost:8080/records/1
 ```
 
@@ -171,6 +192,11 @@ internal/records/
   filter.go          фильтры списка и формат ответа
   storage.go         SQL-запросы к Postgres
   handler.go         HTTP-хендлеры и роуты
+internal/clients/    клиенты: модель, SQL, хендлеры (так же устроен internal/employees/)
+internal/employees/  сотрудники
+internal/docs/        openapi.yaml и страница Swagger UI (/swagger)
+internal/httpx/      общие хелперы хендлеров: JSON-ответы, ошибки, разбор id и тела
+internal/testdb/     временная схема в Postgres для тестов хранилищ
 migrations/          SQL-миграции + код их применения
 Dockerfile           сборка образа сервера (multi-stage, ~12 МБ)
 docker-compose.yml   PostgreSQL (порт 5433) + сервер (порт 8080)

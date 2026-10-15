@@ -14,16 +14,30 @@ import (
 type fakeStore struct {
 	records    []Record
 	nextID     int64
+	clients    int64 // существуют клиенты с id 1..clients
+	employees  int64 // и сотрудники с id 1..employees
 	err        error
 	lastFilter ListFilter // с какими фильтрами вызвали List
 }
 
+// newFakeStore создаёт клиента 1, сотрудника 1 и записи с этими именами.
 func newFakeStore(names ...string) *fakeStore {
-	s := &fakeStore{nextID: 1}
+	s := &fakeStore{nextID: 1, clients: 1, employees: 1}
 	for _, n := range names {
-		s.Create(context.Background(), RecordInput{Name: n})
+		s.Create(context.Background(), RecordInput{Name: n, ClientID: 1, EmployeeID: 1})
 	}
 	return s
+}
+
+// checkRefs повторяет проверку внешних ключей, которую в настоящей БД делает Postgres.
+func (s *fakeStore) checkRefs(in RecordInput) error {
+	if in.ClientID > s.clients {
+		return ErrClientNotFound
+	}
+	if in.EmployeeID > s.employees {
+		return ErrEmployeeNotFound
+	}
+	return nil
 }
 
 // List в фейке только применяет пагинацию: сами фильтры проверяются
@@ -56,7 +70,11 @@ func (s *fakeStore) Create(ctx context.Context, in RecordInput) (Record, error) 
 	if s.err != nil {
 		return Record{}, s.err
 	}
-	rec := Record{ID: s.nextID, Name: in.Name, Description: in.Description, CreatedAt: time.Now()}
+	if err := s.checkRefs(in); err != nil {
+		return Record{}, err
+	}
+	rec := Record{ID: s.nextID, Name: in.Name, Description: in.Description,
+		ClientID: &in.ClientID, EmployeeID: &in.EmployeeID, CreatedAt: time.Now()}
 	s.nextID++
 	s.records = append(s.records, rec)
 	return rec, nil
@@ -68,8 +86,13 @@ func (s *fakeStore) Update(ctx context.Context, id int64, in RecordInput) (Recor
 	}
 	for i := range s.records {
 		if s.records[i].ID == id {
+			if err := s.checkRefs(in); err != nil {
+				return Record{}, err
+			}
 			s.records[i].Name = in.Name
 			s.records[i].Description = in.Description
+			s.records[i].ClientID = &in.ClientID
+			s.records[i].EmployeeID = &in.EmployeeID
 			return s.records[i], nil
 		}
 	}
@@ -115,17 +138,24 @@ func TestHandlerStatusCodes(t *testing.T) {
 		{"id не число", "GET", "/records/abc", "", http.StatusBadRequest},
 		{"id отрицательный", "GET", "/records/-1", "", http.StatusBadRequest},
 
-		{"создание", "POST", "/records", `{"name":"новая"}`, http.StatusCreated},
-		{"создание с описанием", "POST", "/records", `{"name":"новая","description":"текст"}`, http.StatusCreated},
-		{"создание: пустое имя", "POST", "/records", `{"name":""}`, http.StatusBadRequest},
-		{"создание: имя из пробелов", "POST", "/records", `{"name":"   "}`, http.StatusBadRequest},
-		{"создание: без name", "POST", "/records", `{}`, http.StatusBadRequest},
+		{"создание", "POST", "/records", `{"name":"новая","client_id":1,"employee_id":1}`, http.StatusCreated},
+		{"создание с описанием", "POST", "/records", `{"name":"новая","description":"текст","client_id":1,"employee_id":1}`, http.StatusCreated},
+		{"создание: пустое имя", "POST", "/records", `{"name":"","client_id":1,"employee_id":1}`, http.StatusBadRequest},
+		{"создание: имя из пробелов", "POST", "/records", `{"name":"   ","client_id":1,"employee_id":1}`, http.StatusBadRequest},
+		{"создание: без name", "POST", "/records", `{"client_id":1,"employee_id":1}`, http.StatusBadRequest},
+		{"создание: без client_id", "POST", "/records", `{"name":"x","employee_id":1}`, http.StatusBadRequest},
+		{"создание: без employee_id", "POST", "/records", `{"name":"x","client_id":1}`, http.StatusBadRequest},
+		{"создание: client_id отрицательный", "POST", "/records", `{"name":"x","client_id":-1,"employee_id":1}`, http.StatusBadRequest},
+		{"создание: нет клиента", "POST", "/records", `{"name":"x","client_id":999,"employee_id":1}`, http.StatusBadRequest},
+		{"создание: нет сотрудника", "POST", "/records", `{"name":"x","client_id":1,"employee_id":999}`, http.StatusBadRequest},
 		{"создание: сломанный JSON", "POST", "/records", `{`, http.StatusBadRequest},
 
-		{"изменение", "PUT", "/records/1", `{"name":"другая"}`, http.StatusOK},
-		{"изменение: нет записи", "PUT", "/records/999", `{"name":"x"}`, http.StatusNotFound},
-		{"изменение: пустое имя", "PUT", "/records/1", `{"name":""}`, http.StatusBadRequest},
-		{"изменение: id не число", "PUT", "/records/abc", `{"name":"x"}`, http.StatusBadRequest},
+		{"изменение", "PUT", "/records/1", `{"name":"другая","client_id":1,"employee_id":1}`, http.StatusOK},
+		{"изменение: нет записи", "PUT", "/records/999", `{"name":"x","client_id":1,"employee_id":1}`, http.StatusNotFound},
+		{"изменение: пустое имя", "PUT", "/records/1", `{"name":"","client_id":1,"employee_id":1}`, http.StatusBadRequest},
+		{"изменение: без client_id", "PUT", "/records/1", `{"name":"x","employee_id":1}`, http.StatusBadRequest},
+		{"изменение: нет клиента", "PUT", "/records/1", `{"name":"x","client_id":999,"employee_id":1}`, http.StatusBadRequest},
+		{"изменение: id не число", "PUT", "/records/abc", `{"name":"x","client_id":1,"employee_id":1}`, http.StatusBadRequest},
 
 		{"удаление", "DELETE", "/records/1", "", http.StatusNoContent},
 		{"удаление: нет записи", "DELETE", "/records/999", "", http.StatusNotFound},
@@ -151,8 +181,8 @@ func TestHandlerStoreError(t *testing.T) {
 	}{
 		{"GET", "/records", ""},
 		{"GET", "/records/1", ""},
-		{"POST", "/records", `{"name":"x"}`},
-		{"PUT", "/records/1", `{"name":"x"}`},
+		{"POST", "/records", `{"name":"x","client_id":1,"employee_id":1}`},
+		{"PUT", "/records/1", `{"name":"x","client_id":1,"employee_id":1}`},
 		{"DELETE", "/records/1", ""},
 	}
 
@@ -259,7 +289,7 @@ func TestErrorsAreJSON(t *testing.T) {
 
 func TestCreateReturnsRecord(t *testing.T) {
 	store := newFakeStore()
-	rec := do(t, store, "POST", "/records", `{"name":"новая","description":"описание"}`)
+	rec := do(t, store, "POST", "/records", `{"name":"новая","description":"описание","client_id":1,"employee_id":1}`)
 
 	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
 		t.Errorf("Content-Type = %q", ct)
@@ -268,7 +298,8 @@ func TestCreateReturnsRecord(t *testing.T) {
 	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
 		t.Fatalf("ответ не JSON: %v", err)
 	}
-	if got.ID != 1 || got.Name != "новая" || got.Description != "описание" {
+	if got.ID != 1 || got.Name != "новая" || got.Description != "описание" ||
+		got.ClientID == nil || *got.ClientID != 1 || got.EmployeeID == nil || *got.EmployeeID != 1 {
 		t.Errorf("получили %+v", got)
 	}
 	if len(store.records) != 1 {
@@ -278,7 +309,7 @@ func TestCreateReturnsRecord(t *testing.T) {
 
 func TestUpdateChangesName(t *testing.T) {
 	store := newFakeStore("старая")
-	do(t, store, "PUT", "/records/1", `{"name":"новая","description":"описание"}`)
+	do(t, store, "PUT", "/records/1", `{"name":"новая","description":"описание","client_id":1,"employee_id":1}`)
 
 	if got := store.records[0]; got.Name != "новая" || got.Description != "описание" {
 		t.Errorf("после изменения %+v", got)
@@ -291,5 +322,12 @@ func TestDeleteRemovesRecord(t *testing.T) {
 
 	if len(store.records) != 1 || store.records[0].ID != 2 {
 		t.Errorf("после удаления осталось %+v", store.records)
+	}
+}
+
+func TestCreateRecordUnknownClient(t *testing.T) {
+	rec := do(t, newFakeStore(), "POST", "/records", `{"name":"x","client_id":999,"employee_id":1}`)
+	if !strings.Contains(rec.Body.String(), "клиент не найден") {
+		t.Errorf("тело = %s", rec.Body)
 	}
 }
