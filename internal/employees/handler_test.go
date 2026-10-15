@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -13,13 +14,13 @@ import (
 
 type fakeStore struct {
 	employees  []Employee
-	nextID     int64
-	hasRecords map[int64]bool // у каких сотрудников есть записи — их нельзя удалить
+	nextID     int
+	hasRecords map[string]bool // у каких сотрудников есть записи — их нельзя удалить
 	err        error
 }
 
 func newFakeStore(names ...string) *fakeStore {
-	s := &fakeStore{nextID: 1, hasRecords: map[int64]bool{}}
+	s := &fakeStore{nextID: 1, hasRecords: map[string]bool{}}
 	for _, n := range names {
 		s.Create(context.Background(), EmployeeInput{Name: n})
 	}
@@ -39,13 +40,13 @@ func (s *fakeStore) Create(ctx context.Context, in EmployeeInput) (Employee, err
 	if s.err != nil {
 		return Employee{}, s.err
 	}
-	e := Employee{ID: s.nextID, Name: in.Name, CreatedAt: time.Now()}
+	e := Employee{ID: uid(s.nextID), Name: in.Name, CreatedAt: time.Now()}
 	s.nextID++
 	s.employees = append(s.employees, e)
 	return e, nil
 }
 
-func (s *fakeStore) Update(ctx context.Context, id int64, in EmployeeInput) (Employee, error) {
+func (s *fakeStore) Update(ctx context.Context, id string, in EmployeeInput) (Employee, error) {
 	if s.err != nil {
 		return Employee{}, s.err
 	}
@@ -58,7 +59,7 @@ func (s *fakeStore) Update(ctx context.Context, id int64, in EmployeeInput) (Emp
 	return Employee{}, ErrNotFound
 }
 
-func (s *fakeStore) Delete(ctx context.Context, id int64) error {
+func (s *fakeStore) Delete(ctx context.Context, id string) error {
 	if s.err != nil {
 		return s.err
 	}
@@ -73,6 +74,9 @@ func (s *fakeStore) Delete(ctx context.Context, id int64) error {
 	}
 	return ErrNotFound
 }
+
+// uid — n-й тестовый id: 00000000-0000-0000-0000-000000000001 и т. д.
+func uid(n int) string { return fmt.Sprintf("00000000-0000-0000-0000-%012d", n) }
 
 func do(t *testing.T, store EmployeeStore, method, path, body string) *httptest.ResponseRecorder {
 	t.Helper()
@@ -99,21 +103,21 @@ func TestHandlerStatusCodes(t *testing.T) {
 		{"создание: без name", "POST", "/employees", `{}`, http.StatusBadRequest},
 		{"создание: сломанный JSON", "POST", "/employees", `{`, http.StatusBadRequest},
 
-		{"изменение", "PUT", "/employees/1", `{"name":"Ольга"}`, http.StatusOK},
-		{"изменение: нет сотрудника", "PUT", "/employees/999", `{"name":"x"}`, http.StatusNotFound},
-		{"изменение: пустое имя", "PUT", "/employees/1", `{"name":""}`, http.StatusBadRequest},
-		{"изменение: id не число", "PUT", "/employees/abc", `{"name":"x"}`, http.StatusBadRequest},
+		{"изменение", "PUT", "/employees/00000000-0000-0000-0000-000000000001", `{"name":"Ольга"}`, http.StatusOK},
+		{"изменение: нет сотрудника", "PUT", "/employees/00000000-0000-0000-0000-000000000999", `{"name":"x"}`, http.StatusNotFound},
+		{"изменение: пустое имя", "PUT", "/employees/00000000-0000-0000-0000-000000000001", `{"name":""}`, http.StatusBadRequest},
+		{"изменение: id не UUID", "PUT", "/employees/abc", `{"name":"x"}`, http.StatusBadRequest},
 
-		{"удаление", "DELETE", "/employees/1", "", http.StatusNoContent},
-		{"удаление: есть записи", "DELETE", "/employees/2", "", http.StatusConflict},
-		{"удаление: нет сотрудника", "DELETE", "/employees/999", "", http.StatusNotFound},
-		{"удаление: id не число", "DELETE", "/employees/abc", "", http.StatusBadRequest},
+		{"удаление", "DELETE", "/employees/00000000-0000-0000-0000-000000000001", "", http.StatusNoContent},
+		{"удаление: есть записи", "DELETE", "/employees/00000000-0000-0000-0000-000000000002", "", http.StatusConflict},
+		{"удаление: нет сотрудника", "DELETE", "/employees/00000000-0000-0000-0000-000000000999", "", http.StatusNotFound},
+		{"удаление: id не UUID", "DELETE", "/employees/abc", "", http.StatusBadRequest},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			store := newFakeStore("Анна", "Борис")
-			store.hasRecords[2] = true
+			store.hasRecords[uid(2)] = true
 			rec := do(t, store, tt.method, tt.path, tt.body)
 			if rec.Code != tt.wantStatus {
 				t.Errorf("статус = %d, ожидали %d; тело: %s", rec.Code, tt.wantStatus, rec.Body)
@@ -128,8 +132,8 @@ func TestHandlerStoreError(t *testing.T) {
 	}{
 		{"GET", "/employees", ""},
 		{"POST", "/employees", `{"name":"x"}`},
-		{"PUT", "/employees/1", `{"name":"x"}`},
-		{"DELETE", "/employees/1", ""},
+		{"PUT", "/employees/00000000-0000-0000-0000-000000000001", `{"name":"x"}`},
+		{"DELETE", "/employees/00000000-0000-0000-0000-000000000001", ""},
 	}
 
 	for _, r := range requests {
@@ -175,11 +179,11 @@ func TestCreateAndUpdate(t *testing.T) {
 	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
 		t.Fatalf("ответ не JSON: %v", err)
 	}
-	if got.ID != 1 || got.Name != "Анна" {
+	if got.ID != uid(1) || got.Name != "Анна" {
 		t.Errorf("создали %+v", got)
 	}
 
-	do(t, store, "PUT", "/employees/1", `{"name":"Ольга"}`)
+	do(t, store, "PUT", "/employees/00000000-0000-0000-0000-000000000001", `{"name":"Ольга"}`)
 	if store.employees[0].Name != "Ольга" {
 		t.Errorf("после изменения %+v", store.employees[0])
 	}

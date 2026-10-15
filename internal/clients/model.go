@@ -3,7 +3,7 @@ package clients
 import "time"
 
 type Client struct {
-	ID        int64     `json:"id"`
+	ID        string    `json:"id"`
 	FullName  string    `json:"full_name"`
 	Phone     string    `json:"phone"`
 	CreatedAt time.Time `json:"created_at"`

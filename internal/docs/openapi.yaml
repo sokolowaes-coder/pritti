@@ -36,9 +36,9 @@ paths:
           example: name,description
         - name: id
           in: query
-          description: Список id через запятую
+          description: Список id (UUID) через запятую
           schema: { type: string }
-          example: 1,2,3
+          example: 01a140dc-0c34-7abb-8d6c-36e2d1879e0d,01a140dc-0c0f-7915-b950-f3a9772c93d8
         - name: dateStart
           in: query
           description: created_at не раньше. `2026-09-27` или `2026-09-27T10:00:00`, пояс сервера.
@@ -267,7 +267,7 @@ components:
       name: id
       in: path
       required: true
-      schema: { type: integer, format: int64, minimum: 1 }
+      schema: { type: string, format: uuid, example: 01a140dc-0c34-7abb-8d6c-36e2d1879e0d }
 
   requestBodies:
     Client:
@@ -331,21 +331,21 @@ components:
     Record:
       type: object
       properties:
-        id: { type: integer, format: int64, example: 1 }
+        id: { type: string, format: uuid, example: 01a140dc-0c34-7abb-8d6c-36e2d1879e0d }
         name: { type: string, example: Чистка лица }
         description: { type: string, example: кабинет 1 }
         client_id:
-          type: integer
-          format: int64
+          type: string
+          format: uuid
           nullable: true
           description: null только у записей, созданных до появления клиентов
-          example: 1
+          example: 01a140dc-0b11-7c2e-9d4f-5a6b7c8d9e0f
         employee_id:
-          type: integer
-          format: int64
+          type: string
+          format: uuid
           nullable: true
           description: null только у записей, созданных до появления сотрудников
-          example: 1
+          example: 01a140dc-0b22-7d3f-8e5a-6b7c8d9e0f1a
         created_at: { type: string, format: date-time }
 
     RecordInput:
@@ -354,8 +354,8 @@ components:
       properties:
         name: { type: string, maxLength: 200, example: Чистка лица }
         description: { type: string, maxLength: 2000, default: "", example: кабинет 1 }
-        client_id: { type: integer, format: int64, minimum: 1, example: 1 }
-        employee_id: { type: integer, format: int64, minimum: 1, example: 1 }
+        client_id: { type: string, format: uuid, example: 01a140dc-0b11-7c2e-9d4f-5a6b7c8d9e0f }
+        employee_id: { type: string, format: uuid, example: 01a140dc-0b22-7d3f-8e5a-6b7c8d9e0f1a }
 
     RecordList:
       type: object
@@ -373,7 +373,7 @@ components:
             id:
               type: object
               properties:
-                value: { type: array, nullable: true, items: { type: integer, format: int64 } }
+                value: { type: array, nullable: true, items: { type: string, format: uuid } }
             dateStart:
               type: object
               properties:
@@ -395,7 +395,7 @@ components:
     Client:
       type: object
       properties:
-        id: { type: integer, format: int64, example: 1 }
+        id: { type: string, format: uuid, example: 01a140dc-0c34-7abb-8d6c-36e2d1879e0d }
         full_name: { type: string, example: Иванова Анна Сергеевна }
         phone: { type: string, example: "+79161234567" }
         created_at: { type: string, format: date-time }
@@ -412,7 +412,7 @@ components:
     Person:
       type: object
       properties:
-        id: { type: integer, format: int64, example: 1 }
+        id: { type: string, format: uuid, example: 01a140dc-0c34-7abb-8d6c-36e2d1879e0d }
         name: { type: string, example: Мария Смирнова }
         created_at: { type: string, format: date-time }
 

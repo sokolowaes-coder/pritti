@@ -3,7 +3,7 @@ package employees
 import "time"
 
 type Employee struct {
-	ID        int64     `json:"id"`
+	ID        string    `json:"id"`
 	Name      string    `json:"name"`
 	CreatedAt time.Time `json:"created_at"`
 }

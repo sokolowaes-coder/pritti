@@ -13,8 +13,8 @@ const maxNameLen = 200
 type EmployeeStore interface {
 	List(ctx context.Context) ([]Employee, error)
 	Create(ctx context.Context, in EmployeeInput) (Employee, error)
-	Update(ctx context.Context, id int64, in EmployeeInput) (Employee, error)
-	Delete(ctx context.Context, id int64) error
+	Update(ctx context.Context, id string, in EmployeeInput) (Employee, error)
+	Delete(ctx context.Context, id string) error
 }
 
 var _ EmployeeStore = (*Storage)(nil)

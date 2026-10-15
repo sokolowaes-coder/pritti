@@ -39,7 +39,7 @@ func (s *Storage) List(ctx context.Context, f ListFilter) ([]Record, int, error)
 	args = append(args, f.Limit, f.Offset)
 	rows, err := s.db.Query(ctx,
 		`SELECT `+recordColumns+` FROM records`+where+
-			fmt.Sprintf(` ORDER BY id LIMIT $%d OFFSET $%d`, len(args)-1, len(args)),
+			fmt.Sprintf(` ORDER BY created_at, id LIMIT $%d OFFSET $%d`, len(args)-1, len(args)),
 		args...,
 	)
 	if err != nil {
@@ -78,7 +78,7 @@ func buildWhere(f ListFilter) (string, []any) {
 		conds = append(conds, "("+strings.Join(ors, " OR ")+")")
 	}
 	if len(f.IDs) > 0 {
-		conds = append(conds, "id = ANY("+arg(f.IDs)+")")
+		conds = append(conds, "id = ANY("+arg(f.IDs)+"::uuid[])")
 	}
 	if f.DateStart != nil {
 		conds = append(conds, "created_at >= "+arg(*f.DateStart))
@@ -104,7 +104,7 @@ func scanRecord(row pgx.Row) (Record, error) {
 	return rec, err
 }
 
-func (s *Storage) GetByID(ctx context.Context, id int64) (Record, error) {
+func (s *Storage) GetByID(ctx context.Context, id string) (Record, error) {
 	rec, err := scanRecord(s.db.QueryRow(ctx,
 		`SELECT `+recordColumns+` FROM records WHERE id = $1`,
 		id,
@@ -124,7 +124,7 @@ func (s *Storage) Create(ctx context.Context, in RecordInput) (Record, error) {
 	return rec, foreignKeyError(err)
 }
 
-func (s *Storage) Update(ctx context.Context, id int64, in RecordInput) (Record, error) {
+func (s *Storage) Update(ctx context.Context, id string, in RecordInput) (Record, error) {
 	rec, err := scanRecord(s.db.QueryRow(ctx,
 		`UPDATE records SET name = $2, description = $3, client_id = $4, employee_id = $5 WHERE id = $1
 		 RETURNING `+recordColumns,
@@ -151,7 +151,7 @@ func foreignKeyError(err error) error {
 	return err
 }
 
-func (s *Storage) Delete(ctx context.Context, id int64) error {
+func (s *Storage) Delete(ctx context.Context, id string) error {
 	tag, err := s.db.Exec(ctx, `DELETE FROM records WHERE id = $1`, id)
 	if err != nil {
 		return err

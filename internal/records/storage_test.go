@@ -17,7 +17,7 @@ func newTestStorage(t *testing.T) *Storage {
 
 // newRefs создаёт клиента и сотрудника, без которых нельзя создать запись.
 // Прямым SQL, чтобы тесты записей не зависели от пакетов clients и employees.
-func newRefs(t *testing.T, s *Storage) (clientID, employeeID int64) {
+func newRefs(t *testing.T, s *Storage) (clientID, employeeID string) {
 	t.Helper()
 	ctx := context.Background()
 	if err := s.db.QueryRow(ctx, `INSERT INTO clients (full_name, phone) VALUES ('клиент', '+79161234567') RETURNING id`).Scan(&clientID); err != nil {
@@ -28,6 +28,9 @@ func newRefs(t *testing.T, s *Storage) (clientID, employeeID int64) {
 	}
 	return clientID, employeeID
 }
+
+// missingID — валидный UUID, которого нет в базе.
+const missingID = "00000000-0000-0000-0000-000000000999"
 
 func TestStorageCRUD(t *testing.T) {
 	s := newTestStorage(t)
@@ -43,7 +46,7 @@ func TestStorageCRUD(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if created.ID == 0 || created.Name != "первая" || created.Description != "описание" || created.CreatedAt.IsZero() ||
+	if created.ID == "" || created.Name != "первая" || created.Description != "описание" || created.CreatedAt.IsZero() ||
 		created.ClientID == nil || *created.ClientID != clientID || created.EmployeeID == nil || *created.EmployeeID != employeeID {
 		t.Errorf("Create вернул %+v", created)
 	}
@@ -71,14 +74,14 @@ func TestStorageNotFound(t *testing.T) {
 	s := newTestStorage(t)
 	ctx := context.Background()
 
-	if _, err := s.GetByID(ctx, 999); !errors.Is(err, ErrNotFound) {
+	if _, err := s.GetByID(ctx, missingID); !errors.Is(err, ErrNotFound) {
 		t.Errorf("GetByID: %v, ожидали ErrNotFound", err)
 	}
 	clientID, employeeID := newRefs(t, s)
-	if _, err := s.Update(ctx, 999, RecordInput{Name: "x", ClientID: clientID, EmployeeID: employeeID}); !errors.Is(err, ErrNotFound) {
+	if _, err := s.Update(ctx, missingID, RecordInput{Name: "x", ClientID: clientID, EmployeeID: employeeID}); !errors.Is(err, ErrNotFound) {
 		t.Errorf("Update: %v, ожидали ErrNotFound", err)
 	}
-	if err := s.Delete(ctx, 999); !errors.Is(err, ErrNotFound) {
+	if err := s.Delete(ctx, missingID); !errors.Is(err, ErrNotFound) {
 		t.Errorf("Delete: %v, ожидали ErrNotFound", err)
 	}
 }
@@ -97,10 +100,10 @@ func TestStorageUnknownClientOrEmployee(t *testing.T) {
 	ctx := context.Background()
 	clientID, employeeID := newRefs(t, s)
 
-	if _, err := s.Create(ctx, RecordInput{Name: "x", ClientID: 999, EmployeeID: employeeID}); !errors.Is(err, ErrClientNotFound) {
+	if _, err := s.Create(ctx, RecordInput{Name: "x", ClientID: missingID, EmployeeID: employeeID}); !errors.Is(err, ErrClientNotFound) {
 		t.Errorf("Create: %v, ожидали ErrClientNotFound", err)
 	}
-	if _, err := s.Create(ctx, RecordInput{Name: "x", ClientID: clientID, EmployeeID: 999}); !errors.Is(err, ErrEmployeeNotFound) {
+	if _, err := s.Create(ctx, RecordInput{Name: "x", ClientID: clientID, EmployeeID: missingID}); !errors.Is(err, ErrEmployeeNotFound) {
 		t.Errorf("Create: %v, ожидали ErrEmployeeNotFound", err)
 	}
 
@@ -108,7 +111,7 @@ func TestStorageUnknownClientOrEmployee(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Update(ctx, rec.ID, RecordInput{Name: "x", ClientID: 999, EmployeeID: employeeID}); !errors.Is(err, ErrClientNotFound) {
+	if _, err := s.Update(ctx, rec.ID, RecordInput{Name: "x", ClientID: missingID, EmployeeID: employeeID}); !errors.Is(err, ErrClientNotFound) {
 		t.Errorf("Update: %v, ожидали ErrClientNotFound", err)
 	}
 }
@@ -118,6 +121,7 @@ func TestStorageListFilters(t *testing.T) {
 	ctx := context.Background()
 	clientID, employeeID := newRefs(t, s)
 
+	ids := map[string]string{} // имя → id
 	for _, in := range []RecordInput{
 		{Name: "Лазерная депиляция", Description: "кабинет 1"},
 		{Name: "Чистка лица", Description: "после лазерной процедуры"},
@@ -126,11 +130,14 @@ func TestStorageListFilters(t *testing.T) {
 		{Name: "Пилинг"},
 	} {
 		in.ClientID, in.EmployeeID = clientID, employeeID
-		if _, err := s.Create(ctx, in); err != nil {
+		rec, err := s.Create(ctx, in)
+		if err != nil {
 			t.Fatal(err)
 		}
+		ids[rec.Name] = rec.ID
 	}
 	// created_at у всех «сейчас»; одну запись сдвигаем в прошлое для фильтра по дате.
+	// Список сортируется по created_at, поэтому «Пилинг» дальше везде первая.
 	if _, err := s.db.Exec(ctx, `UPDATE records SET created_at = '2020-01-15T12:00:00Z' WHERE name = 'Пилинг'`); err != nil {
 		t.Fatal(err)
 	}
@@ -147,16 +154,16 @@ func TestStorageListFilters(t *testing.T) {
 		wantNames []string
 		wantTotal int
 	}{
-		{"без фильтров", ListFilter{}, []string{"Лазерная депиляция", "Чистка лица", "Массаж", "Массаж_спины", "Пилинг"}, 5},
+		{"без фильтров, от старых к новым", ListFilter{}, []string{"Пилинг", "Лазерная депиляция", "Чистка лица", "Массаж", "Массаж_спины"}, 5},
 		{"поиск без учёта регистра по name и description", ListFilter{FullText: str("ЛАЗЕР")}, []string{"Лазерная депиляция", "Чистка лица"}, 2},
 		{"поиск только по name", ListFilter{FullText: str("лазер"), FullTextFields: []string{"name"}}, []string{"Лазерная депиляция"}, 1},
 		{"% ищется как символ", ListFilter{FullText: str("50%")}, []string{"Массаж"}, 1},
 		{"_ ищется как символ", ListFilter{FullText: str("_")}, []string{"Массаж_спины"}, 1},
-		{"по списку id", ListFilter{IDs: []int64{2, 4, 999}}, []string{"Чистка лица", "Массаж_спины"}, 2},
+		{"по списку id", ListFilter{IDs: []string{ids["Чистка лица"], ids["Массаж_спины"], missingID}}, []string{"Чистка лица", "Массаж_спины"}, 2},
 		{"dateEnd в прошлом", ListFilter{DateEnd: at("2020-12-31T00:00:00Z")}, []string{"Пилинг"}, 1},
 		{"dateStart отсекает старую", ListFilter{DateStart: at("2021-01-01T00:00:00Z")}, []string{"Лазерная депиляция", "Чистка лица", "Массаж", "Массаж_спины"}, 4},
-		{"фильтры вместе (AND)", ListFilter{FullText: str("массаж"), IDs: []int64{3, 5}}, []string{"Массаж"}, 1},
-		{"пагинация: count — всего, data — страница", ListFilter{Limit: 2, Offset: 1}, []string{"Чистка лица", "Массаж"}, 5},
+		{"фильтры вместе (AND)", ListFilter{FullText: str("массаж"), IDs: []string{ids["Массаж"], ids["Пилинг"]}}, []string{"Массаж"}, 1},
+		{"пагинация: count — всего, data — страница", ListFilter{Limit: 2, Offset: 1}, []string{"Лазерная депиляция", "Чистка лица"}, 5},
 		{"offset за концом", ListFilter{Limit: 2, Offset: 10}, []string{}, 5},
 	}
 

@@ -23,7 +23,7 @@ func NewStorage(db *pgxpool.Pool) *Storage {
 }
 
 func (s *Storage) List(ctx context.Context) ([]Employee, error) {
-	rows, err := s.db.Query(ctx, `SELECT id, name, created_at FROM employees ORDER BY id`)
+	rows, err := s.db.Query(ctx, `SELECT id, name, created_at FROM employees ORDER BY created_at, id`)
 	if err != nil {
 		return nil, err
 	}
@@ -46,7 +46,7 @@ func (s *Storage) Create(ctx context.Context, in EmployeeInput) (Employee, error
 	return e, err
 }
 
-func (s *Storage) Update(ctx context.Context, id int64, in EmployeeInput) (Employee, error) {
+func (s *Storage) Update(ctx context.Context, id string, in EmployeeInput) (Employee, error) {
 	var e Employee
 	err := s.db.QueryRow(ctx,
 		`UPDATE employees SET name = $2 WHERE id = $1 RETURNING id, name, created_at`,
@@ -58,7 +58,7 @@ func (s *Storage) Update(ctx context.Context, id int64, in EmployeeInput) (Emplo
 	return e, err
 }
 
-func (s *Storage) Delete(ctx context.Context, id int64) error {
+func (s *Storage) Delete(ctx context.Context, id string) error {
 	tag, err := s.db.Exec(ctx, `DELETE FROM employees WHERE id = $1`, id)
 	// 23503 — на сотрудника ссылаются записи, внешний ключ не даёт удалить.
 	var pgErr *pgconn.PgError

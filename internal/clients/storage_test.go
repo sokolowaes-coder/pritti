@@ -8,6 +8,9 @@ import (
 	"go-education/internal/testdb"
 )
 
+// missingID — валидный UUID, которого нет в базе.
+const missingID = "00000000-0000-0000-0000-000000000999"
+
 func TestStorageCRUD(t *testing.T) {
 	db := testdb.New(t)
 	s := NewStorage(db)
@@ -19,7 +22,7 @@ func TestStorageCRUD(t *testing.T) {
 	}
 
 	created, err := s.Create(ctx, ClientInput{FullName: "Иванова Анна", Phone: "+79161234567"})
-	if err != nil || created.ID == 0 || created.FullName != "Иванова Анна" || created.Phone != "+79161234567" || created.CreatedAt.IsZero() {
+	if err != nil || created.ID == "" || created.FullName != "Иванова Анна" || created.Phone != "+79161234567" || created.CreatedAt.IsZero() {
 		t.Fatalf("Create: %+v, %v", created, err)
 	}
 
@@ -45,10 +48,10 @@ func TestStorageNotFound(t *testing.T) {
 	s := NewStorage(testdb.New(t))
 	ctx := context.Background()
 
-	if _, err := s.Update(ctx, 999, ClientInput{FullName: "x", Phone: "+79161234567"}); !errors.Is(err, ErrNotFound) {
+	if _, err := s.Update(ctx, missingID, ClientInput{FullName: "x", Phone: "+79161234567"}); !errors.Is(err, ErrNotFound) {
 		t.Errorf("Update: %v, ожидали ErrNotFound", err)
 	}
-	if err := s.Delete(ctx, 999); !errors.Is(err, ErrNotFound) {
+	if err := s.Delete(ctx, missingID); !errors.Is(err, ErrNotFound) {
 		t.Errorf("Delete: %v, ожидали ErrNotFound", err)
 	}
 }

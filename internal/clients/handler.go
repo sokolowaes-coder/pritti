@@ -14,8 +14,8 @@ const maxFullNameLen = 200
 type ClientStore interface {
 	List(ctx context.Context) ([]Client, error)
 	Create(ctx context.Context, in ClientInput) (Client, error)
-	Update(ctx context.Context, id int64, in ClientInput) (Client, error)
-	Delete(ctx context.Context, id int64) error
+	Update(ctx context.Context, id string, in ClientInput) (Client, error)
+	Delete(ctx context.Context, id string) error
 }
 
 var _ ClientStore = (*Storage)(nil)

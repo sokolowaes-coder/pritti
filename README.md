@@ -52,9 +52,9 @@ Swagger UI: [localhost:8080/swagger](http://localhost:8080/swagger) — все �
 | Метод    | Путь            | Тело               | Ответ                        |
 |----------|-----------------|--------------------|------------------------------|
 | `GET`    | `/records`      | —                  | `200` список с фильтрами (см. ниже) |
-| `POST`   | `/records`      | `{"name":"...", "description":"...", "client_id":1, "employee_id":1}` | `201` созданная запись |
+| `POST`   | `/records`      | `{"name":"...", "description":"...", "client_id":"<uuid>", "employee_id":"<uuid>"}` | `201` созданная запись |
 | `GET`    | `/records/{id}` | —                  | `200` запись                 |
-| `PUT`    | `/records/{id}` | `{"name":"...", "description":"...", "client_id":1, "employee_id":1}` | `200` обновлённая запись |
+| `PUT`    | `/records/{id}` | `{"name":"...", "description":"...", "client_id":"<uuid>", "employee_id":"<uuid>"}` | `200` обновлённая запись |
 | `DELETE` | `/records/{id}` | —                  | `204` без тела               |
 | `GET`    | `/healthz`      | —                  | `200` `{"status":"ok"}` / `503`, если БД недоступна |
 
@@ -90,7 +90,7 @@ Swagger UI: [localhost:8080/swagger](http://localhost:8080/swagger) — все �
 |------------------|---------------------------------|-------------------------------------------------|
 | `fullText`       | `лазер`                         | поиск подстроки без учёта регистра              |
 | `fullTextFields` | `name` или `name,description`   | где искать (по умолчанию — везде)               |
-| `id`             | `1,2,3` или `id=1&id=2`         | только записи с этими id                        |
+| `id`             | `<uuid>,<uuid>` или `id=<uuid>&id=<uuid>` | только записи с этими id                |
 | `dateStart`      | `2026-09-27` / `2026-09-27T10:00:00` | `created_at` не раньше                     |
 | `dateEnd`        | `2026-09-27`                    | `created_at` не позже; дата без времени — до конца дня |
 | `limit`          | `20`                            | размер страницы, 1–100 (по умолчанию 20)        |
@@ -124,21 +124,25 @@ curl 'localhost:8080/records?fullText=лазер&dateStart=2026-09-27&dateEnd=20
 Запись:
 
 ```json
-{"id": 1, "name": "первая", "description": "", "client_id": 1, "employee_id": 1, "created_at": "2026-09-26T23:33:25.360074+03:00"}
+{"id": "01a140dc-0c34-7abb-8d6c-36e2d1879e0d", "name": "первая", "description": "", "client_id": "01a140dc-0b11-7c2e-9d4f-5a6b7c8d9e0f", "employee_id": "01a140dc-0b22-7d3f-8e5a-6b7c8d9e0f1a", "created_at": "2026-09-26T23:33:25.360074+03:00"}
 ```
+
+Все id — UUID v7 (`01a140dc-0c34-7abb-8d6c-36e2d1879e0d`): первые 48 бит — время создания,
+поэтому id растут по времени и не выдают, сколько записей в базе. Генерирует их Postgres
+(функция `gen_uuid_v7()` из миграции 000007). Списки сортируются по `created_at`.
 
 Примеры:
 
 С включённым `API_KEY` добавьте к каждому запросу `-H "X-API-Key: $API_KEY"`.
 
 ```sh
-curl -i -X POST localhost:8080/clients -d '{"full_name":"Анна Иванова","phone":"89161234567"}'
-curl -i -X POST localhost:8080/employees -d '{"name":"Мария"}'
-curl -i -X POST localhost:8080/records -d '{"name":"первая","client_id":1,"employee_id":1}'
+curl -i -X POST localhost:8080/clients -d '{"full_name":"Анна Иванова","phone":"89161234567"}'   # → id клиента
+curl -i -X POST localhost:8080/employees -d '{"name":"Мария"}'                                   # → id сотрудника
+curl -i -X POST localhost:8080/records -d '{"name":"первая","client_id":"<id клиента>","employee_id":"<id сотрудника>"}'
 curl -i localhost:8080/records
-curl -i localhost:8080/records/1
-curl -i -X PUT localhost:8080/records/1 -d '{"name":"изменённая","client_id":1,"employee_id":1}'
-curl -i -X DELETE localhost:8080/records/1
+curl -i localhost:8080/records/<id записи>
+curl -i -X PUT localhost:8080/records/<id записи> -d '{"name":"изменённая","client_id":"<id клиента>","employee_id":"<id сотрудника>"}'
+curl -i -X DELETE localhost:8080/records/<id записи>
 ```
 
 ## Деплой на Vercel

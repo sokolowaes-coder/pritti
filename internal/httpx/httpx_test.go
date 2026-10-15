@@ -62,3 +62,26 @@ func TestCheckText(t *testing.T) {
 		t.Errorf("6 символов при пределе 5: %q", msg)
 	}
 }
+
+func TestIsUUID(t *testing.T) {
+	for _, s := range []string{
+		"026252ca-c86a-11f1-97a7-345a603609cd",
+		"01A140DC-0C34-7ABB-8D6C-36E2D1879E0D",
+		"00000000-0000-0000-0000-000000000000",
+	} {
+		if !IsUUID(s) {
+			t.Errorf("IsUUID(%q) = false", s)
+		}
+	}
+	for _, s := range []string{
+		"", "1", "abc",
+		"026252ca-c86a-11f1-97a7-345a603609c",   // 35 символов
+		"026252ca-c86a-11f1-97a7-345a603609cdd", // 37
+		"026252cac86a-11f1-97a7-345a603609cd0",  // дефис не на месте
+		"026252ca-c86a-11f1-97a7-345a603609cg",  // не hex
+	} {
+		if IsUUID(s) {
+			t.Errorf("IsUUID(%q) = true", s)
+		}
+	}
+}

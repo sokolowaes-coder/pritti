@@ -34,14 +34,37 @@ func InternalError(w http.ResponseWriter, op string, err error) {
 	WriteError(w, http.StatusInternalServerError, "внутренняя ошибка")
 }
 
-// ParseID читает {id} из пути. При ошибке сам отвечает 400 и возвращает false.
-func ParseID(w http.ResponseWriter, r *http.Request) (int64, bool) {
-	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
-	if err != nil || id <= 0 {
+// ParseID читает {id} из пути — UUID вида 01a140dc-0c34-7abb-8d6c-36e2d1879e0d.
+// При ошибке сам отвечает 400 и возвращает false.
+func ParseID(w http.ResponseWriter, r *http.Request) (string, bool) {
+	id := r.PathValue("id")
+	if !IsUUID(id) {
 		WriteError(w, http.StatusBadRequest, "неверный id")
-		return 0, false
+		return "", false
 	}
-	return id, true
+	return strings.ToLower(id), true
+}
+
+// IsUUID проверяет запись UUID: 8-4-4-4-12 шестнадцатеричных цифр.
+// Проверка здесь, а не только в БД: иначе Postgres ответит ошибкой приведения типа — 500.
+func IsUUID(s string) bool {
+	if len(s) != 36 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch i {
+		case 8, 13, 18, 23:
+			if c != '-' {
+				return false
+			}
+		default:
+			if !('0' <= c && c <= '9' || 'a' <= c && c <= 'f' || 'A' <= c && c <= 'F') {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // DecodeJSON строго читает тело запроса в v: ровно один JSON-объект, без неизвестных

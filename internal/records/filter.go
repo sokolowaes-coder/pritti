@@ -6,6 +6,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"go-education/internal/httpx"
 )
 
 const (
@@ -27,7 +29,7 @@ var fullTextColumns = map[string]string{
 type ListFilter struct {
 	FullText       *string
 	FullTextFields []string // пусто — искать по всем полям из fullTextColumns
-	IDs            []int64
+	IDs            []string
 	DateStart      *time.Time // created_at >= DateStart
 	DateEnd        *time.Time // created_at <= DateEnd
 	Limit          int
@@ -49,11 +51,10 @@ func ParseListFilter(q url.Values, loc *time.Location) (ListFilter, error) {
 	}
 
 	for _, s := range splitList(q["id"]) {
-		id, err := strconv.ParseInt(s, 10, 64)
-		if err != nil || id <= 0 {
+		if !httpx.IsUUID(s) {
 			return f, fmt.Errorf("id: неверное значение %q", s)
 		}
-		f.IDs = append(f.IDs, id)
+		f.IDs = append(f.IDs, strings.ToLower(s))
 	}
 
 	var err error
@@ -127,10 +128,10 @@ type ListResponse struct {
 }
 
 type ListFiltersOut struct {
-	FullText  FullTextFilter       `json:"fullText"`
-	ID        FilterValue[[]int64] `json:"id"`
-	DateStart FilterValue[*string] `json:"dateStart"`
-	DateEnd   FilterValue[*string] `json:"dateEnd"`
+	FullText  FullTextFilter        `json:"fullText"`
+	ID        FilterValue[[]string] `json:"id"`
+	DateStart FilterValue[*string]  `json:"dateStart"`
+	DateEnd   FilterValue[*string]  `json:"dateEnd"`
 }
 
 type FilterValue[T any] struct {
@@ -152,7 +153,7 @@ func newListResponse(f ListFilter, records []Record, total int, loc *time.Locati
 		Success: true,
 		Filters: ListFiltersOut{
 			FullText:  FullTextFilter{Value: f.FullText, Fields: f.FullTextFields},
-			ID:        FilterValue[[]int64]{Value: f.IDs},
+			ID:        FilterValue[[]string]{Value: f.IDs},
 			DateStart: FilterValue[*string]{Value: formatDate(f.DateStart, loc)},
 			DateEnd:   FilterValue[*string]{Value: formatDate(f.DateEnd, loc)},
 		},

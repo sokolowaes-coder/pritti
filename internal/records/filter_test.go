@@ -39,11 +39,16 @@ func TestParseListFilter(t *testing.T) {
 		{name: "неизвестное поле поиска", query: "fullTextFields=password", wantErr: "fullTextFields"},
 		{
 			name:  "id повторами и через запятую",
-			query: "id=1&id=2,3",
-			want:  ListFilter{IDs: []int64{1, 2, 3}, Limit: 20},
+			query: "id=00000000-0000-0000-0000-000000000001&id=00000000-0000-0000-0000-000000000002,00000000-0000-0000-0000-000000000003",
+			want:  ListFilter{IDs: []string{"00000000-0000-0000-0000-000000000001", "00000000-0000-0000-0000-000000000002", "00000000-0000-0000-0000-000000000003"}, Limit: 20},
 		},
-		{name: "id не число", query: "id=abc", wantErr: "id"},
-		{name: "id ноль", query: "id=0", wantErr: "id"},
+		{
+			name:  "id в верхнем регистре приводится к нижнему",
+			query: "id=0190A0B1-C2D3-7E4F-8A5B-6C7D8E9FA0B1",
+			want:  ListFilter{IDs: []string{"0190a0b1-c2d3-7e4f-8a5b-6c7d8e9fa0b1"}, Limit: 20},
+		},
+		{name: "id не UUID", query: "id=abc", wantErr: "id"},
+		{name: "id — число", query: "id=1", wantErr: "id"},
 		{
 			name:  "даты без времени: начало и конец дня",
 			query: "dateStart=2026-09-27&dateEnd=2026-09-27",

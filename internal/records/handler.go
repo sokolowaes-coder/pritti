@@ -16,10 +16,10 @@ const (
 
 type RecordStore interface {
 	List(ctx context.Context, f ListFilter) ([]Record, int, error)
-	GetByID(ctx context.Context, id int64) (Record, error)
+	GetByID(ctx context.Context, id string) (Record, error)
 	Create(ctx context.Context, in RecordInput) (Record, error)
-	Update(ctx context.Context, id int64, in RecordInput) (Record, error)
-	Delete(ctx context.Context, id int64) error
+	Update(ctx context.Context, id string, in RecordInput) (Record, error)
+	Delete(ctx context.Context, id string) error
 }
 
 var _ RecordStore = (*Storage)(nil)
@@ -142,10 +142,14 @@ func decodeInput(w http.ResponseWriter, r *http.Request) (RecordInput, bool) {
 	}
 	switch {
 	case msg != "":
-	case in.ClientID <= 0:
+	case in.ClientID == "":
 		msg = "client_id обязателен"
-	case in.EmployeeID <= 0:
+	case !httpx.IsUUID(in.ClientID):
+		msg = "client_id: неверный id"
+	case in.EmployeeID == "":
 		msg = "employee_id обязателен"
+	case !httpx.IsUUID(in.EmployeeID):
+		msg = "employee_id: неверный id"
 	}
 	if msg != "" {
 		httpx.WriteError(w, http.StatusBadRequest, msg)

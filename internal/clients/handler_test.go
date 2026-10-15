@@ -14,20 +14,20 @@ import (
 
 type fakeStore struct {
 	clients    []Client
-	nextID     int64
-	hasRecords map[int64]bool // у каких клиентов есть записи — их нельзя удалить
+	nextID     int
+	hasRecords map[string]bool // у каких клиентов есть записи — их нельзя удалить
 	err        error
 }
 
 func newFakeStore(names ...string) *fakeStore {
-	s := &fakeStore{nextID: 1, hasRecords: map[int64]bool{}}
+	s := &fakeStore{nextID: 1, hasRecords: map[string]bool{}}
 	for i, n := range names {
 		s.Create(context.Background(), ClientInput{FullName: n, Phone: fmt.Sprintf("+7916000000%d", i)})
 	}
 	return s
 }
 
-func (s *fakeStore) phoneTaken(id int64, phone string) bool {
+func (s *fakeStore) phoneTaken(id string, phone string) bool {
 	for _, c := range s.clients {
 		if c.Phone == phone && c.ID != id {
 			return true
@@ -49,16 +49,16 @@ func (s *fakeStore) Create(ctx context.Context, in ClientInput) (Client, error) 
 	if s.err != nil {
 		return Client{}, s.err
 	}
-	if s.phoneTaken(0, in.Phone) {
+	if s.phoneTaken("", in.Phone) {
 		return Client{}, ErrPhoneTaken
 	}
-	c := Client{ID: s.nextID, FullName: in.FullName, Phone: in.Phone, CreatedAt: time.Now()}
+	c := Client{ID: uid(s.nextID), FullName: in.FullName, Phone: in.Phone, CreatedAt: time.Now()}
 	s.nextID++
 	s.clients = append(s.clients, c)
 	return c, nil
 }
 
-func (s *fakeStore) Update(ctx context.Context, id int64, in ClientInput) (Client, error) {
+func (s *fakeStore) Update(ctx context.Context, id string, in ClientInput) (Client, error) {
 	if s.err != nil {
 		return Client{}, s.err
 	}
@@ -75,7 +75,7 @@ func (s *fakeStore) Update(ctx context.Context, id int64, in ClientInput) (Clien
 	return Client{}, ErrNotFound
 }
 
-func (s *fakeStore) Delete(ctx context.Context, id int64) error {
+func (s *fakeStore) Delete(ctx context.Context, id string) error {
 	if s.err != nil {
 		return s.err
 	}
@@ -90,6 +90,9 @@ func (s *fakeStore) Delete(ctx context.Context, id int64) error {
 	}
 	return ErrNotFound
 }
+
+// uid — n-й тестовый id: 00000000-0000-0000-0000-000000000001 и т. д.
+func uid(n int) string { return fmt.Sprintf("00000000-0000-0000-0000-%012d", n) }
 
 func do(t *testing.T, store ClientStore, method, path, body string) *httptest.ResponseRecorder {
 	t.Helper()
@@ -120,23 +123,23 @@ func TestHandlerStatusCodes(t *testing.T) {
 		{"создание: телефон занят", "POST", "/clients", `{"full_name":"Иванова Анна","phone":"+79160000000"}`, http.StatusConflict},
 		{"создание: сломанный JSON", "POST", "/clients", `{`, http.StatusBadRequest},
 
-		{"изменение", "PUT", "/clients/1", `{"full_name":"Петрова Ольга","phone":"+79160000000"}`, http.StatusOK},
-		{"изменение: нет клиента", "PUT", "/clients/999", `{"full_name":"x","phone":"+79161234567"}`, http.StatusNotFound},
-		{"изменение: пустое ФИО", "PUT", "/clients/1", `{"full_name":"","phone":"+79161234567"}`, http.StatusBadRequest},
-		{"изменение: без phone", "PUT", "/clients/1", `{"full_name":"x"}`, http.StatusBadRequest},
-		{"изменение: телефон чужой", "PUT", "/clients/1", `{"full_name":"x","phone":"+79160000001"}`, http.StatusConflict},
-		{"изменение: id не число", "PUT", "/clients/abc", `{"full_name":"x","phone":"+79161234567"}`, http.StatusBadRequest},
+		{"изменение", "PUT", "/clients/00000000-0000-0000-0000-000000000001", `{"full_name":"Петрова Ольга","phone":"+79160000000"}`, http.StatusOK},
+		{"изменение: нет клиента", "PUT", "/clients/00000000-0000-0000-0000-000000000999", `{"full_name":"x","phone":"+79161234567"}`, http.StatusNotFound},
+		{"изменение: пустое ФИО", "PUT", "/clients/00000000-0000-0000-0000-000000000001", `{"full_name":"","phone":"+79161234567"}`, http.StatusBadRequest},
+		{"изменение: без phone", "PUT", "/clients/00000000-0000-0000-0000-000000000001", `{"full_name":"x"}`, http.StatusBadRequest},
+		{"изменение: телефон чужой", "PUT", "/clients/00000000-0000-0000-0000-000000000001", `{"full_name":"x","phone":"+79160000001"}`, http.StatusConflict},
+		{"изменение: id не UUID", "PUT", "/clients/abc", `{"full_name":"x","phone":"+79161234567"}`, http.StatusBadRequest},
 
-		{"удаление", "DELETE", "/clients/1", "", http.StatusNoContent},
-		{"удаление: есть записи", "DELETE", "/clients/2", "", http.StatusConflict},
-		{"удаление: нет клиента", "DELETE", "/clients/999", "", http.StatusNotFound},
-		{"удаление: id не число", "DELETE", "/clients/abc", "", http.StatusBadRequest},
+		{"удаление", "DELETE", "/clients/00000000-0000-0000-0000-000000000001", "", http.StatusNoContent},
+		{"удаление: есть записи", "DELETE", "/clients/00000000-0000-0000-0000-000000000002", "", http.StatusConflict},
+		{"удаление: нет клиента", "DELETE", "/clients/00000000-0000-0000-0000-000000000999", "", http.StatusNotFound},
+		{"удаление: id не UUID", "DELETE", "/clients/abc", "", http.StatusBadRequest},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			store := newFakeStore("Анна", "Борис")
-			store.hasRecords[2] = true
+			store.hasRecords[uid(2)] = true
 			rec := do(t, store, tt.method, tt.path, tt.body)
 			if rec.Code != tt.wantStatus {
 				t.Errorf("статус = %d, ожидали %d; тело: %s", rec.Code, tt.wantStatus, rec.Body)
@@ -151,8 +154,8 @@ func TestHandlerStoreError(t *testing.T) {
 	}{
 		{"GET", "/clients", ""},
 		{"POST", "/clients", `{"full_name":"x","phone":"+79161234567"}`},
-		{"PUT", "/clients/1", `{"full_name":"x","phone":"+79161234567"}`},
-		{"DELETE", "/clients/1", ""},
+		{"PUT", "/clients/00000000-0000-0000-0000-000000000001", `{"full_name":"x","phone":"+79161234567"}`},
+		{"DELETE", "/clients/00000000-0000-0000-0000-000000000001", ""},
 	}
 
 	for _, r := range requests {
@@ -198,11 +201,11 @@ func TestCreateNormalizesPhone(t *testing.T) {
 	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
 		t.Fatalf("ответ не JSON: %v", err)
 	}
-	if got.ID != 1 || got.FullName != "Иванова Анна" || got.Phone != "+79161234567" {
+	if got.ID != uid(1) || got.FullName != "Иванова Анна" || got.Phone != "+79161234567" {
 		t.Errorf("создали %+v", got)
 	}
 
-	do(t, store, "PUT", "/clients/1", `{"full_name":"Петрова Ольга","phone":"+7 999 000-11-22"}`)
+	do(t, store, "PUT", "/clients/00000000-0000-0000-0000-000000000001", `{"full_name":"Петрова Ольга","phone":"+7 999 000-11-22"}`)
 	if c := store.clients[0]; c.FullName != "Петрова Ольга" || c.Phone != "+79990001122" {
 		t.Errorf("после изменения %+v", c)
 	}

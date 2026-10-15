@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -11,30 +12,32 @@ import (
 	"time"
 )
 
+// uid — n-й тестовый id: 00000000-0000-0000-0000-000000000001 и т. д.
+func uid(n int) string { return fmt.Sprintf("00000000-0000-0000-0000-%012d", n) }
+
 type fakeStore struct {
 	records    []Record
-	nextID     int64
-	clients    int64 // существуют клиенты с id 1..clients
-	employees  int64 // и сотрудники с id 1..employees
+	nextID     int
+	refs       map[string]bool // id существующих клиентов и сотрудников
 	err        error
 	lastFilter ListFilter // с какими фильтрами вызвали List
 }
 
-// newFakeStore создаёт клиента 1, сотрудника 1 и записи с этими именами.
+// newFakeStore создаёт клиента и сотрудника uid(1) и записи с этими именами.
 func newFakeStore(names ...string) *fakeStore {
-	s := &fakeStore{nextID: 1, clients: 1, employees: 1}
+	s := &fakeStore{nextID: 1, refs: map[string]bool{uid(1): true}}
 	for _, n := range names {
-		s.Create(context.Background(), RecordInput{Name: n, ClientID: 1, EmployeeID: 1})
+		s.Create(context.Background(), RecordInput{Name: n, ClientID: uid(1), EmployeeID: uid(1)})
 	}
 	return s
 }
 
 // checkRefs повторяет проверку внешних ключей, которую в настоящей БД делает Postgres.
 func (s *fakeStore) checkRefs(in RecordInput) error {
-	if in.ClientID > s.clients {
+	if !s.refs[in.ClientID] {
 		return ErrClientNotFound
 	}
-	if in.EmployeeID > s.employees {
+	if !s.refs[in.EmployeeID] {
 		return ErrEmployeeNotFound
 	}
 	return nil
@@ -54,7 +57,7 @@ func (s *fakeStore) List(ctx context.Context, f ListFilter) ([]Record, int, erro
 	return out, len(s.records), nil
 }
 
-func (s *fakeStore) GetByID(ctx context.Context, id int64) (Record, error) {
+func (s *fakeStore) GetByID(ctx context.Context, id string) (Record, error) {
 	if s.err != nil {
 		return Record{}, s.err
 	}
@@ -73,14 +76,14 @@ func (s *fakeStore) Create(ctx context.Context, in RecordInput) (Record, error) 
 	if err := s.checkRefs(in); err != nil {
 		return Record{}, err
 	}
-	rec := Record{ID: s.nextID, Name: in.Name, Description: in.Description,
+	rec := Record{ID: uid(s.nextID), Name: in.Name, Description: in.Description,
 		ClientID: &in.ClientID, EmployeeID: &in.EmployeeID, CreatedAt: time.Now()}
 	s.nextID++
 	s.records = append(s.records, rec)
 	return rec, nil
 }
 
-func (s *fakeStore) Update(ctx context.Context, id int64, in RecordInput) (Record, error) {
+func (s *fakeStore) Update(ctx context.Context, id string, in RecordInput) (Record, error) {
 	if s.err != nil {
 		return Record{}, s.err
 	}
@@ -99,7 +102,7 @@ func (s *fakeStore) Update(ctx context.Context, id int64, in RecordInput) (Recor
 	return Record{}, ErrNotFound
 }
 
-func (s *fakeStore) Delete(ctx context.Context, id int64) error {
+func (s *fakeStore) Delete(ctx context.Context, id string) error {
 	if s.err != nil {
 		return s.err
 	}
@@ -133,37 +136,39 @@ func TestHandlerStatusCodes(t *testing.T) {
 		wantStatus int
 	}{
 		{"список", "GET", "/records", "", http.StatusOK},
-		{"одна запись", "GET", "/records/1", "", http.StatusOK},
-		{"нет записи", "GET", "/records/999", "", http.StatusNotFound},
-		{"id не число", "GET", "/records/abc", "", http.StatusBadRequest},
-		{"id отрицательный", "GET", "/records/-1", "", http.StatusBadRequest},
+		{"одна запись", "GET", "/records/00000000-0000-0000-0000-000000000001", "", http.StatusOK},
+		{"нет записи", "GET", "/records/00000000-0000-0000-0000-000000000999", "", http.StatusNotFound},
+		{"id не UUID", "GET", "/records/abc", "", http.StatusBadRequest},
+		{"id — число", "GET", "/records/-1", "", http.StatusBadRequest},
 
-		{"создание", "POST", "/records", `{"name":"новая","client_id":1,"employee_id":1}`, http.StatusCreated},
-		{"создание с описанием", "POST", "/records", `{"name":"новая","description":"текст","client_id":1,"employee_id":1}`, http.StatusCreated},
-		{"создание: пустое имя", "POST", "/records", `{"name":"","client_id":1,"employee_id":1}`, http.StatusBadRequest},
-		{"создание: имя из пробелов", "POST", "/records", `{"name":"   ","client_id":1,"employee_id":1}`, http.StatusBadRequest},
-		{"создание: без name", "POST", "/records", `{"client_id":1,"employee_id":1}`, http.StatusBadRequest},
-		{"создание: без client_id", "POST", "/records", `{"name":"x","employee_id":1}`, http.StatusBadRequest},
-		{"создание: без employee_id", "POST", "/records", `{"name":"x","client_id":1}`, http.StatusBadRequest},
-		{"создание: client_id отрицательный", "POST", "/records", `{"name":"x","client_id":-1,"employee_id":1}`, http.StatusBadRequest},
-		{"создание: нет клиента", "POST", "/records", `{"name":"x","client_id":999,"employee_id":1}`, http.StatusBadRequest},
-		{"создание: нет сотрудника", "POST", "/records", `{"name":"x","client_id":1,"employee_id":999}`, http.StatusBadRequest},
+		{"создание", "POST", "/records", `{"name":"новая","client_id":"00000000-0000-0000-0000-000000000001","employee_id":"00000000-0000-0000-0000-000000000001"}`, http.StatusCreated},
+		{"создание с описанием", "POST", "/records", `{"name":"новая","description":"текст","client_id":"00000000-0000-0000-0000-000000000001","employee_id":"00000000-0000-0000-0000-000000000001"}`, http.StatusCreated},
+		{"создание: пустое имя", "POST", "/records", `{"name":"","client_id":"00000000-0000-0000-0000-000000000001","employee_id":"00000000-0000-0000-0000-000000000001"}`, http.StatusBadRequest},
+		{"создание: имя из пробелов", "POST", "/records", `{"name":"   ","client_id":"00000000-0000-0000-0000-000000000001","employee_id":"00000000-0000-0000-0000-000000000001"}`, http.StatusBadRequest},
+		{"создание: без name", "POST", "/records", `{"client_id":"00000000-0000-0000-0000-000000000001","employee_id":"00000000-0000-0000-0000-000000000001"}`, http.StatusBadRequest},
+		{"создание: без client_id", "POST", "/records", `{"name":"x","employee_id":"00000000-0000-0000-0000-000000000001"}`, http.StatusBadRequest},
+		{"создание: без employee_id", "POST", "/records", `{"name":"x","client_id":"00000000-0000-0000-0000-000000000001"}`, http.StatusBadRequest},
+		{"создание: client_id не UUID", "POST", "/records", `{"name":"x","client_id":"abc","employee_id":"00000000-0000-0000-0000-000000000001"}`, http.StatusBadRequest},
+		{"создание: нет клиента", "POST", "/records", `{"name":"x","client_id":"00000000-0000-0000-0000-000000000999","employee_id":"00000000-0000-0000-0000-000000000001"}`, http.StatusBadRequest},
+		{"создание: нет сотрудника", "POST", "/records", `{"name":"x","client_id":"00000000-0000-0000-0000-000000000001","employee_id":"00000000-0000-0000-0000-000000000999"}`, http.StatusBadRequest},
 		{"создание: сломанный JSON", "POST", "/records", `{`, http.StatusBadRequest},
-		{"создание: имя длиннее 200", "POST", "/records", `{"name":"` + strings.Repeat("я", 201) + `","client_id":1,"employee_id":1}`, http.StatusBadRequest},
-		{"создание: опечатка в поле", "POST", "/records", `{"name":"x","clientid":1,"employee_id":1}`, http.StatusBadRequest},
+		{"создание: имя длиннее 200", "POST", "/records", `{"name":"` + strings.Repeat("я", 201) + `","client_id":"00000000-0000-0000-0000-000000000001","employee_id":"00000000-0000-0000-0000-000000000001"}`, http.StatusBadRequest},
+		{"создание: опечатка в поле", "POST", "/records", `{"name":"x","clientid":"00000000-0000-0000-0000-000000000001","employee_id":"00000000-0000-0000-0000-000000000001"}`, http.StatusBadRequest},
 
-		{"изменение", "PUT", "/records/1", `{"name":"другая","client_id":1,"employee_id":1}`, http.StatusOK},
-		{"изменение: нет записи", "PUT", "/records/999", `{"name":"x","client_id":1,"employee_id":1}`, http.StatusNotFound},
-		{"изменение: пустое имя", "PUT", "/records/1", `{"name":"","client_id":1,"employee_id":1}`, http.StatusBadRequest},
-		{"изменение: без client_id", "PUT", "/records/1", `{"name":"x","employee_id":1}`, http.StatusBadRequest},
-		{"изменение: нет клиента", "PUT", "/records/1", `{"name":"x","client_id":999,"employee_id":1}`, http.StatusBadRequest},
-		{"изменение: id не число", "PUT", "/records/abc", `{"name":"x","client_id":1,"employee_id":1}`, http.StatusBadRequest},
+		{"изменение", "PUT", "/records/00000000-0000-0000-0000-000000000001", `{"name":"другая","client_id":"00000000-0000-0000-0000-000000000001","employee_id":"00000000-0000-0000-0000-000000000001"}`, http.StatusOK},
+		{"изменение: нет записи", "PUT", "/records/00000000-0000-0000-0000-000000000999", `{"name":"x","client_id":"00000000-0000-0000-0000-000000000001","employee_id":"00000000-0000-0000-0000-000000000001"}`, http.StatusNotFound},
+		{"изменение: пустое имя", "PUT", "/records/00000000-0000-0000-0000-000000000001", `{"name":"","client_id":"00000000-0000-0000-0000-000000000001","employee_id":"00000000-0000-0000-0000-000000000001"}`, http.StatusBadRequest},
+		{"изменение: без client_id", "PUT", "/records/00000000-0000-0000-0000-000000000001", `{"name":"x","employee_id":"00000000-0000-0000-0000-000000000001"}`, http.StatusBadRequest},
+		{"изменение: нет клиента", "PUT", "/records/00000000-0000-0000-0000-000000000001", `{"name":"x","client_id":"00000000-0000-0000-0000-000000000999","employee_id":"00000000-0000-0000-0000-000000000001"}`, http.StatusBadRequest},
+		{"изменение: id не UUID", "PUT", "/records/abc", `{"name":"x","client_id":"00000000-0000-0000-0000-000000000001","employee_id":"00000000-0000-0000-0000-000000000001"}`, http.StatusBadRequest},
 
-		{"удаление", "DELETE", "/records/1", "", http.StatusNoContent},
-		{"удаление: нет записи", "DELETE", "/records/999", "", http.StatusNotFound},
-		{"удаление: id не число", "DELETE", "/records/abc", "", http.StatusBadRequest},
+		{"id в верхнем регистре", "GET", "/records/00000000-0000-0000-0000-000000000001", "", http.StatusOK},
 
-		{"неподдерживаемый метод", "PATCH", "/records/1", "", http.StatusMethodNotAllowed},
+		{"удаление", "DELETE", "/records/00000000-0000-0000-0000-000000000001", "", http.StatusNoContent},
+		{"удаление: нет записи", "DELETE", "/records/00000000-0000-0000-0000-000000000999", "", http.StatusNotFound},
+		{"удаление: id не UUID", "DELETE", "/records/abc", "", http.StatusBadRequest},
+
+		{"неподдерживаемый метод", "PATCH", "/records/00000000-0000-0000-0000-000000000001", "", http.StatusMethodNotAllowed},
 	}
 
 	for _, tt := range tests {
@@ -182,10 +187,10 @@ func TestHandlerStoreError(t *testing.T) {
 		method, path, body string
 	}{
 		{"GET", "/records", ""},
-		{"GET", "/records/1", ""},
-		{"POST", "/records", `{"name":"x","client_id":1,"employee_id":1}`},
-		{"PUT", "/records/1", `{"name":"x","client_id":1,"employee_id":1}`},
-		{"DELETE", "/records/1", ""},
+		{"GET", "/records/00000000-0000-0000-0000-000000000001", ""},
+		{"POST", "/records", `{"name":"x","client_id":"00000000-0000-0000-0000-000000000001","employee_id":"00000000-0000-0000-0000-000000000001"}`},
+		{"PUT", "/records/00000000-0000-0000-0000-000000000001", `{"name":"x","client_id":"00000000-0000-0000-0000-000000000001","employee_id":"00000000-0000-0000-0000-000000000001"}`},
+		{"DELETE", "/records/00000000-0000-0000-0000-000000000001", ""},
 	}
 
 	for _, r := range requests {
@@ -211,7 +216,7 @@ func TestListEmptyDataIsArray(t *testing.T) {
 
 func TestListResponseFormat(t *testing.T) {
 	store := newFakeStore("первая", "вторая", "третья")
-	rec := do(t, store, "GET", "/records?fullText=вто&id=2,3&dateStart=2026-09-27&dateEnd=2026-09-27&limit=2&offset=1", "")
+	rec := do(t, store, "GET", "/records?fullText=вто&id=00000000-0000-0000-0000-000000000002,00000000-0000-0000-0000-000000000003&dateStart=2026-09-27&dateEnd=2026-09-27&limit=2&offset=1", "")
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("статус = %d; тело: %s", rec.Code, rec.Body)
@@ -219,10 +224,10 @@ func TestListResponseFormat(t *testing.T) {
 	var got struct {
 		Success bool `json:"success"`
 		Filters struct {
-			FullText  struct{ Value *string } `json:"fullText"`
-			ID        struct{ Value []int64 } `json:"id"`
-			DateStart struct{ Value *string } `json:"dateStart"`
-			DateEnd   struct{ Value *string } `json:"dateEnd"`
+			FullText  struct{ Value *string }  `json:"fullText"`
+			ID        struct{ Value []string } `json:"id"`
+			DateStart struct{ Value *string }  `json:"dateStart"`
+			DateEnd   struct{ Value *string }  `json:"dateEnd"`
 		} `json:"filters"`
 		Count      int        `json:"count"`
 		Pagination Pagination `json:"pagination"`
@@ -242,7 +247,7 @@ func TestListResponseFormat(t *testing.T) {
 	if f.FullText.Value == nil || *f.FullText.Value != "вто" {
 		t.Errorf("fullText = %v", f.FullText.Value)
 	}
-	if len(f.ID.Value) != 2 || f.ID.Value[0] != 2 || f.ID.Value[1] != 3 {
+	if len(f.ID.Value) != 2 || f.ID.Value[0] != uid(2) || f.ID.Value[1] != uid(3) {
 		t.Errorf("id = %v", f.ID.Value)
 	}
 	if f.DateStart.Value == nil || *f.DateStart.Value != "2026-09-27T00:00:00" {
@@ -280,7 +285,7 @@ func TestListBadFilter(t *testing.T) {
 }
 
 func TestErrorsAreJSON(t *testing.T) {
-	rec := do(t, newFakeStore(), "GET", "/records/999", "")
+	rec := do(t, newFakeStore(), "GET", "/records/00000000-0000-0000-0000-000000000999", "")
 	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
 		t.Errorf("Content-Type = %q", ct)
 	}
@@ -291,7 +296,7 @@ func TestErrorsAreJSON(t *testing.T) {
 
 func TestCreateReturnsRecord(t *testing.T) {
 	store := newFakeStore()
-	rec := do(t, store, "POST", "/records", `{"name":"новая","description":"описание","client_id":1,"employee_id":1}`)
+	rec := do(t, store, "POST", "/records", `{"name":"новая","description":"описание","client_id":"00000000-0000-0000-0000-000000000001","employee_id":"00000000-0000-0000-0000-000000000001"}`)
 
 	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
 		t.Errorf("Content-Type = %q", ct)
@@ -300,8 +305,8 @@ func TestCreateReturnsRecord(t *testing.T) {
 	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
 		t.Fatalf("ответ не JSON: %v", err)
 	}
-	if got.ID != 1 || got.Name != "новая" || got.Description != "описание" ||
-		got.ClientID == nil || *got.ClientID != 1 || got.EmployeeID == nil || *got.EmployeeID != 1 {
+	if got.ID != uid(1) || got.Name != "новая" || got.Description != "описание" ||
+		got.ClientID == nil || *got.ClientID != uid(1) || got.EmployeeID == nil || *got.EmployeeID != uid(1) {
 		t.Errorf("получили %+v", got)
 	}
 	if len(store.records) != 1 {
@@ -311,7 +316,7 @@ func TestCreateReturnsRecord(t *testing.T) {
 
 func TestCreateTrimsName(t *testing.T) {
 	store := newFakeStore()
-	do(t, store, "POST", "/records", `{"name":"  новая  ","client_id":1,"employee_id":1}`)
+	do(t, store, "POST", "/records", `{"name":"  новая  ","client_id":"00000000-0000-0000-0000-000000000001","employee_id":"00000000-0000-0000-0000-000000000001"}`)
 	if got := store.records[0].Name; got != "новая" {
 		t.Errorf("name = %q, ожидали без пробелов по краям", got)
 	}
@@ -319,7 +324,7 @@ func TestCreateTrimsName(t *testing.T) {
 
 func TestUpdateChangesName(t *testing.T) {
 	store := newFakeStore("старая")
-	do(t, store, "PUT", "/records/1", `{"name":"новая","description":"описание","client_id":1,"employee_id":1}`)
+	do(t, store, "PUT", "/records/00000000-0000-0000-0000-000000000001", `{"name":"новая","description":"описание","client_id":"00000000-0000-0000-0000-000000000001","employee_id":"00000000-0000-0000-0000-000000000001"}`)
 
 	if got := store.records[0]; got.Name != "новая" || got.Description != "описание" {
 		t.Errorf("после изменения %+v", got)
@@ -328,15 +333,15 @@ func TestUpdateChangesName(t *testing.T) {
 
 func TestDeleteRemovesRecord(t *testing.T) {
 	store := newFakeStore("первая", "вторая")
-	do(t, store, "DELETE", "/records/1", "")
+	do(t, store, "DELETE", "/records/00000000-0000-0000-0000-000000000001", "")
 
-	if len(store.records) != 1 || store.records[0].ID != 2 {
+	if len(store.records) != 1 || store.records[0].ID != uid(2) {
 		t.Errorf("после удаления осталось %+v", store.records)
 	}
 }
 
 func TestCreateRecordUnknownClient(t *testing.T) {
-	rec := do(t, newFakeStore(), "POST", "/records", `{"name":"x","client_id":999,"employee_id":1}`)
+	rec := do(t, newFakeStore(), "POST", "/records", `{"name":"x","client_id":"00000000-0000-0000-0000-000000000999","employee_id":"00000000-0000-0000-0000-000000000001"}`)
 	if !strings.Contains(rec.Body.String(), "клиент не найден") {
 		t.Errorf("тело = %s", rec.Body)
 	}
