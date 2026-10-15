@@ -1,5 +1,5 @@
 # Этап сборки: компилируем статический бинарник.
-FROM golang:1.26-alpine AS build
+FROM golang:1.27-alpine AS build
 WORKDIR /src
 
 # Сначала только зависимости — этот слой кешируется, пока не меняется go.mod/go.sum.
