@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"strings"
 
-	"go-education/internal/httpx"
+	"pritti/internal/httpx"
 )
 
 const maxFullNameLen = 200

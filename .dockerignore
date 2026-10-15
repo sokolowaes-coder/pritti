@@ -1,6 +1,6 @@
 .git
 .github
-/go-education
+/pritti
 *.md
 docker-compose.yml
 Dockerfile

@@ -11,8 +11,8 @@ import (
 	"time"
 	_ "time/tzdata" // база часовых поясов внутри бинарника: в distroless-образе её нет
 
-	"go-education/internal/app"
-	"go-education/internal/health"
+	"pritti/internal/app"
+	"pritti/internal/health"
 )
 
 func main() {

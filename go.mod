@@ -1,4 +1,4 @@
-module go-education
+module pritti
 
 go 1.26.4
 

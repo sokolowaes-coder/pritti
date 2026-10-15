@@ -10,13 +10,13 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"go-education/internal/clients"
-	"go-education/internal/docs"
-	"go-education/internal/employees"
-	"go-education/internal/health"
-	"go-education/internal/middleware"
-	"go-education/internal/records"
-	"go-education/migrations"
+	"pritti/internal/clients"
+	"pritti/internal/docs"
+	"pritti/internal/employees"
+	"pritti/internal/health"
+	"pritti/internal/middleware"
+	"pritti/internal/records"
+	"pritti/migrations"
 )
 
 type Config struct {

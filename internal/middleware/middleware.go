@@ -9,7 +9,7 @@ import (
 	"runtime/debug"
 	"time"
 
-	"go-education/internal/httpx"
+	"pritti/internal/httpx"
 )
 
 // Chain оборачивает h в middlewares; первый в списке выполняется первым.

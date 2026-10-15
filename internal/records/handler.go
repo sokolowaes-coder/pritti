@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"time"
 
-	"go-education/internal/httpx"
+	"pritti/internal/httpx"
 )
 
 const (

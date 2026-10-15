@@ -11,7 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"go-education/migrations"
+	"pritti/migrations"
 )
 
 // New подключается к TEST_DATABASE_URL, создаёт отдельную временную схему

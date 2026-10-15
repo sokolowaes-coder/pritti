@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"go-education/internal/httpx"
+	"pritti/internal/httpx"
 )
 
 const (

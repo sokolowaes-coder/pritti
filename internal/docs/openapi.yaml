@@ -1,6 +1,6 @@
 openapi: 3.0.3
 info:
-  title: GO-education API
+  title: Pritti API
   version: 1.0.0
   description: |
     Записи, клиенты и сотрудники. У записи обязательны клиент и сотрудник —

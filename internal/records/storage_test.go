@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"go-education/internal/testdb"
+	"pritti/internal/testdb"
 )
 
 func newTestStorage(t *testing.T) *Storage {

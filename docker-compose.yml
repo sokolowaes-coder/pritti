@@ -1,3 +1,5 @@
+name: pritti
+
 # Снаружи открыт только nginx. app доступен лишь внутри сети compose,
 # Postgres — только с этой машины (127.0.0.1), для `go run` и тестов.
 services:
@@ -6,13 +8,13 @@ services:
     environment:
       POSTGRES_USER: app
       POSTGRES_PASSWORD: app
-      POSTGRES_DB: go_education
+      POSTGRES_DB: pritti
     ports:
       - "127.0.0.1:5433:5432"
     volumes:
       - pgdata:/var/lib/postgresql
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U app -d go_education"]
+      test: ["CMD-SHELL", "pg_isready -U app -d pritti"]
       interval: 2s
       timeout: 3s
       retries: 15
@@ -20,7 +22,7 @@ services:
   app:
     build: .
     environment:
-      DATABASE_URL: postgres://app:app@db:5432/go_education?sslmode=disable
+      DATABASE_URL: postgres://app:app@db:5432/pritti?sslmode=disable
       APP_TZ: Europe/Moscow
       API_KEY: ${API_KEY:-}
     expose:

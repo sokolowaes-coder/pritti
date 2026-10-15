@@ -1,6 +1,10 @@
-# go-education
+# Pritti
 
-Учебный REST API на Go для работы с записями: `net/http` + PostgreSQL (`pgx`).
+Сервис онлайн-записи к мастерам: клиенты, сотрудники и записи.
+REST API на Go — `net/http` + PostgreSQL (`pgx`).
+
+- API: https://api.pritti.space
+- Swagger: https://api.pritti.space/swagger
 
 ## Запуск
 
@@ -25,7 +29,7 @@ docker compose down -v         # остановить и удалить данн
 
 ```sh
 docker compose up -d db
-DATABASE_URL="postgres://app:app@localhost:5433/go_education?sslmode=disable" go run ./cmd/server
+DATABASE_URL="postgres://app:app@localhost:5433/pritti?sslmode=disable" go run ./cmd/server
 ```
 
 Порт 8080 тогда должен быть свободен: если запущен весь compose, остановите его nginx (`docker compose stop nginx`).
@@ -192,7 +196,7 @@ migrations/000003_что_делает.down.sql   -- откат
 go test ./...
 
 # плюс тесты хранилища на настоящей БД (нужен docker compose up -d)
-TEST_DATABASE_URL="postgres://app:app@localhost:5433/go_education?sslmode=disable" go test -race ./...
+TEST_DATABASE_URL="postgres://app:app@localhost:5433/pritti?sslmode=disable" go test -race ./...
 ```
 
 Тесты хранилища работают во временной схеме и не трогают данные в базе.

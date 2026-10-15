@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"go-education/internal/testdb"
+	"pritti/internal/testdb"
 )
 
 // missingID — валидный UUID, которого нет в базе.
